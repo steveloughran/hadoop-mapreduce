@@ -1529,7 +1529,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         LOG.warn("Bailing out ... ");
         throw ace;
       } catch (IOException ie) {
-        LOG.info("problem cleaning system directory: " + systemDir, ie);
+        LOG.info("problem cleaning system directory: " + systemDir + ": " + ie,
+                ie);
       }
       Thread.sleep(FS_ACCESS_RETRY_PERIOD);
     }
