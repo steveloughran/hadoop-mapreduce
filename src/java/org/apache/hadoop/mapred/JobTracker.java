@@ -1469,7 +1469,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       try {
         // if we haven't contacted the namenode go ahead and do it
         if (fs == null) {
-          fs = FileSystem.get(conf);
+          bindFileSystem(conf);
         }
         // clean up the system dir, which will only work if hdfs is out of 
         // safe mode
@@ -3653,14 +3653,23 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getSystemDir()
    */
   public String getSystemDir() {
+    if (fs == null) {
+      throw new java.lang.IllegalStateException("Filesystem is null; "
+              + "JobTracker is not live: " + toString());
+    }
     Path sysDir = new Path(conf.get(JTConfig.JT_SYSTEM_DIR, "/tmp/hadoop/mapred/system"));
     return fs.makeQualified(sysDir).toString();
   }
-  
+
   /**
    * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getStagingAreaDir()
    */
-  public String getStagingAreaDir() {
+  @Override
+  public String getStagingAreaDir() throws IllegalStateException {
+    if (fs == null) {
+      throw new IllegalStateException("Filesystem is null; "
+              + "JobTracker is not live: " + toString());
+    }
     Path stagingRootDir = new Path(conf.get(JTConfig.JT_STAGING_AREA_ROOT, 
         defaultStagingBaseDir));
     String user = UserGroupInformation.getCurrentUGI().getUserName();
@@ -4289,7 +4298,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     trackerIdentifier = getDateFormat().format(new Date());
 
     if (fs == null) {
-      fs = FileSystem.get(conf);
+      bindFileSystem(conf);
     }
     
     tasktrackerExpiryInterval = 
@@ -4383,6 +4392,19 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     completedJobStatusStore = new CompletedJobStatusStore(conf);
     Path homeDir = fs.getHomeDirectory();
     defaultStagingBaseDir = homeDir.getParent().toString();
+  }
+
+  /**
+   * Bind to the filesystem
+   * @param conf the configuration to use
+   * @throws IOException if there was a problem binding to the filesystem
+   */
+  private void bindFileSystem(JobConf conf) throws IOException {
+    fs = FileSystem.get(conf);
+    if (fs == null) {
+      throw new IllegalStateException("Unable to bind to the filesystem: "
+          + FileSystem.getDefaultUri(conf));
+    }
   }
 
   /**
