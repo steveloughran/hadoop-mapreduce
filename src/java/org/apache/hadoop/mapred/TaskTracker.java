@@ -600,6 +600,9 @@ public class TaskTracker extends LifecycleService
        fConf.get(TT_DNS_NAMESERVER,"default"));
     }
  
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Initializing Task Tracker: " + toString());
+    }
     // Check local disk, start async disk service, and clean up all 
     // local directories.
     checkLocalDirs(this.fConf.getLocalDirs());
@@ -1506,7 +1509,7 @@ public class TaskTracker extends LifecycleService
             try {
               jobClient.reportTaskTrackerError(taskTrackerName, null, msg);
             } catch(Exception e ) {
-              LOG.info("Problem reporting to jobtracker: " + e);
+              LOG.info("Problem reporting to jobtracker: " + e, e);
             }
             return State.DENIED;
           }
@@ -1517,6 +1520,10 @@ public class TaskTracker extends LifecycleService
           }
           systemDirectory = new Path(dir);
           systemFS = systemDirectory.getFileSystem(fConf);
+          if(LOG.isDebugEnabled()) {
+            LOG.debug("Starting " + toString());
+            LOG.debug("System directory is " + systemDirectory);
+          }
         }
         
         // Send the heartbeat and process the jobtracker's directives
@@ -2341,7 +2348,7 @@ public class TaskTracker extends LifecycleService
     } catch (Throwable e) {
       String msg = ("Error initializing " + tip.getTask().getTaskID() + 
                     ":\n" + StringUtils.stringifyException(e));
-      LOG.warn(msg);
+      LOG.warn(msg, e);
       tip.reportDiagnosticInfo(msg);
       try {
         tip.kill(true);
@@ -3885,6 +3892,23 @@ public class TaskTracker extends LifecycleService
   }
 
   /**
+   * Return a string that is useful in logs and debugging
+   *
+   * @return state of the job tracker
+   */
+  @Override
+  public String toString() {
+    return super.toString()
+        + " "
+        + (server != null ?
+          (server.toString() + " ") : "")
+        + (taskReportAddress != null ?
+          ("rpc://" + taskReportAddress + "/ ") : "")
+        + (jobTrackAddr != null ?
+          (" bound to JobTracker " + jobTrackAddr + " ") : "");
+  }
+
+  /**
    * Is the TaskMemoryManager Enabled on this system?
    * @return true if enabled, false otherwise.
    */
@@ -4060,7 +4084,7 @@ public class TaskTracker extends LifecycleService
       try {
         purgeTask(tip, wasFailure); // Marking it as failed/killed.
       } catch (IOException ioe) {
-        LOG.warn("Couldn't purge the task of " + tid + ". Error : " + ioe);
+        LOG.warn("Couldn't purge the task of " + tid + ". Error : " + ioe, ioe);
       }
     }
   }

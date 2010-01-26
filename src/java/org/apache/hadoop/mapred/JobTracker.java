@@ -1345,7 +1345,11 @@ public class JobTracker extends LifecycleServiceWithWorkers
     this(conf, new Clock());
   }
   /**
-   * Start the JobTracker process, listen on the indicated port
+   * Create the JobTracker, based on the configuration. 
+   * This does not start the service
+   * @param conf configuration to use
+   * @param clock clock to use
+   * @throws IOException on problems initializing the tracker
    */
   JobTracker(JobConf conf, Clock clock) 
   throws IOException, InterruptedException {
@@ -1540,6 +1544,9 @@ public class JobTracker extends LifecycleServiceWithWorkers
             public FileSystem run() throws IOException {
               return FileSystem.get(conf);
           }});
+          if(fs == null) {
+            throw new IllegalStateException("Unable to bind to the filesystem");
+          }
         }
         // clean up the system dir, which will only work if hdfs is out of 
         // safe mode
@@ -1599,7 +1606,8 @@ public class JobTracker extends LifecycleServiceWithWorkers
         LOG.warn("Bailing out ... ");
         throw ace;
       } catch (IOException ie) {
-        LOG.info("problem cleaning system directory: " + systemDir, ie);
+        LOG.info("problem cleaning system directory: " + systemDir + ": " + ie,
+                ie);
       }
       Thread.sleep(FS_ACCESS_RETRY_PERIOD);
     }
@@ -3931,6 +3939,10 @@ public class JobTracker extends LifecycleServiceWithWorkers
    * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getSystemDir()
    */
   public String getSystemDir() {
+    if (fs == null) {
+      throw new java.lang.IllegalStateException("Filesystem is null; "
+              + "JobTracker is not live: " + this);
+    }
     Path sysDir = new Path(conf.get(JTConfig.JT_SYSTEM_DIR, "/tmp/hadoop/mapred/system"));
     return fs.makeQualified(sysDir).toString();
   }
