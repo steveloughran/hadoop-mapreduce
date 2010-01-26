@@ -238,6 +238,19 @@ public class UtilsForTests {
     } catch (InterruptedException ie) {}
   }
   
+  static void waitForJobHalfDone(RunningJob job)
+          throws IOException {
+    // wait for 50%
+    long timeout = System.currentTimeMillis() + 60000;
+    while (job.mapProgress() < 0.5f) {
+      if(System.currentTimeMillis() > timeout) {
+        throw new IOException("Timeout waiting for job to get to 50% done");
+      }
+      LOG.info("Waiting for job " + job.getID() + " to be 50% done");
+      UtilsForTests.waitFor(100);
+    }
+  }
+  
   /**
    * Wait for the jobtracker to be RUNNING.
    */
