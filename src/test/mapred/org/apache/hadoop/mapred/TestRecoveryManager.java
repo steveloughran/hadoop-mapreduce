@@ -292,7 +292,7 @@ public class TestRecoveryManager extends TestCase {
     conf.set(JTConfig.JT_IPC_ADDRESS, "localhost:0");
     conf.set(JTConfig.JT_HTTP_ADDRESS, "127.0.0.1:0");
 
-    JobTracker jobtracker = new JobTracker(conf);
+    JobTracker jobtracker = JobTracker.startTracker(conf);
 
     // now check if the update restart count works fine or not
     boolean failed = false;
