@@ -1737,10 +1737,12 @@ public class JobTracker extends LifecycleServiceWithWorkers
    * Run forever
    */
   public void offerService() throws InterruptedException, IOException {
-    if(getServiceState() == ServiceState.LIVE) {
+    if(!enterLiveState()) {
       //catch re-entrancy by returning early
       return;
     }
+    //now we are live
+
     // Prepare for recovery. This is done irrespective of the status of restart
     // flag.
     while (true) {
@@ -1755,8 +1757,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
       }
     }
 
-    //now we are live
-    enterLiveState();
+
     taskScheduler.start();
     
     recoveryManager.recover();
