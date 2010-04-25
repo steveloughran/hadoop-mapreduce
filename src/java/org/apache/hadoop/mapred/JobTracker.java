@@ -1445,7 +1445,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
                                            
   /**
    * This contains the startup logic moved out of the constructor.
-   * It must never be called directly. Instead call {@link Service#start()} and
+   * It must never be called directly. Instead call {@link HadoopService#start()} and
    * let service decide whether to invoke this method once and once only.
    *
    * Although most of the intialization work has been performed, the

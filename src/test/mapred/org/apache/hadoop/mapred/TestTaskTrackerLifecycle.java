@@ -18,11 +18,8 @@
 
 package org.apache.hadoop.mapred;
 
-import junit.framework.TestCase;
-import org.apache.commons.logging.Log;
-import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.util.Service;
+import org.apache.hadoop.util.HadoopService;
 import org.junit.Assert;
 import org.junit.After;
 import org.junit.Test;
@@ -43,7 +40,7 @@ public class TestTaskTrackerLifecycle extends Assert {
    */
   @After
   public void tearDown() throws Exception {
-    Service.close(tracker);
+    HadoopService.close(tracker);
   }
 
   /**
@@ -108,7 +105,7 @@ public class TestTaskTrackerLifecycle extends Assert {
       fail("Expected a failure");
     } catch (IOException e) {
       assertConnectionRefused(e);
-      assertEquals(Service.ServiceState.FAILED, tracker.getServiceState());
+      assertEquals(HadoopService.ServiceState.FAILED, tracker.getServiceState());
     }
   }
 
@@ -116,11 +113,11 @@ public class TestTaskTrackerLifecycle extends Assert {
   public void testStartedTracker() throws Throwable {
     tracker = new TaskTracker(createJobConf(), false);
     try {
-      Service.startService(tracker);
+      HadoopService.startService(tracker);
       fail("Expected a failure");
     } catch (IOException e) {
       assertConnectionRefused(e);
-      assertEquals(Service.ServiceState.CLOSED, tracker.getServiceState());
+      assertEquals(HadoopService.ServiceState.CLOSED, tracker.getServiceState());
     }
     assertConnectionRefused(tracker.getFailureCause());
     tracker.close();
