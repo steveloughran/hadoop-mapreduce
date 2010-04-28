@@ -1186,7 +1186,7 @@ public class TaskTracker extends LifecycleService
    *
    * @throws IOException exceptions which will be logged
    */
-  @Override
+  @Override //LifecycleService
   protected void serviceClose() throws IOException {
     synchronized (this) {
       shuttingDown = true;
@@ -1343,7 +1343,7 @@ public class TaskTracker extends LifecycleService
    * @throws IOException for any problem.
    * @throws InterruptedException if the thread was interrupted on startup
    */
-  @Override
+  @Override //LifecycleService
   protected synchronized void serviceStart() 
           throws IOException, InterruptedException {
     JobConf conf = getJobConf();

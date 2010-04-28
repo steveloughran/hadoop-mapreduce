@@ -1447,14 +1447,17 @@ public class JobTracker extends LifecycleServiceWithWorkers
    * This contains the startup logic moved out of the constructor.
    * It must never be called directly. Instead call {@link HadoopService#start()} and
    * let service decide whether to invoke this method once and once only.
+   * 
+   * One exception: subclasses should invoke their parent's serviceStart() if they
+   * subclass this method.
    *
    * Although most of the intialization work has been performed, the
    * JobTracker does not go live until {@link #offerService()} is called.
-   * accordingly, JobTracker does not enter the Live state here.
+   * accordingly, JobTracker does not enter the {@link ServiceState#LIVE} state here.
    * @throws IOException for any startup problems
    * @throws InterruptedException if the thread was interrupted on startup
    */
-  @Override
+  @Override //LifecycleService
   protected void serviceStart() throws IOException, InterruptedException {
     // This is a directory of temporary submission files.  We delete it
     // on startup, and can delete any files that we're done with
@@ -1800,7 +1803,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
    *
    * @throws IOException exceptions which will be logged
    */
-  @Override
+  @Override //LifecycleService
   protected void serviceClose() throws IOException {
       try {
           JobEndNotifier.stopNotifier();
@@ -1915,7 +1918,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
    * This includes blacklisted trackers
    * @return the number of task trackers
    */
-  @Override
+  @Override //LifecycleServiceWithWorkers
   public int getLiveWorkerCount() {
     return taskTrackers.size();
   }
