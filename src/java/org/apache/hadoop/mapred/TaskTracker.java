@@ -1509,7 +1509,7 @@ public class TaskTracker extends LifecycleService
             try {
               jobClient.reportTaskTrackerError(taskTrackerName, null, msg);
             } catch(Exception e ) {
-              LOG.info("Problem reporting to jobtracker: " + e, e);
+              LOG.info("Problem reporting to jobtracker: " + e);
             }
             return State.DENIED;
           }
@@ -2348,7 +2348,7 @@ public class TaskTracker extends LifecycleService
     } catch (Throwable e) {
       String msg = ("Error initializing " + tip.getTask().getTaskID() + 
                     ":\n" + StringUtils.stringifyException(e));
-      LOG.warn(msg, e);
+      LOG.warn(msg);
       tip.reportDiagnosticInfo(msg);
       try {
         tip.kill(true);
@@ -4084,7 +4084,7 @@ public class TaskTracker extends LifecycleService
       try {
         purgeTask(tip, wasFailure); // Marking it as failed/killed.
       } catch (IOException ioe) {
-        LOG.warn("Couldn't purge the task of " + tid + ". Error : " + ioe, ioe);
+        LOG.warn("Couldn't purge the task of " + tid + ". Error : " + ioe);
       }
     }
   }

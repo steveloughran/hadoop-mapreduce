@@ -192,7 +192,6 @@ public class JobTracker extends LifecycleServiceWithWorkers
 
   private MRAsyncDiskService asyncDiskService;
   
-  
   /**
    * A client tried to submit a job before the Job Tracker was ready.
    */
@@ -265,8 +264,8 @@ public class JobTracker extends LifecycleServiceWithWorkers
         // bail out
         throw ace;
       } catch (IOException e) {
-        LOG.warn("Error starting tracker: " +
-                e, e);
+        LOG.warn("Error starting tracker: " + 
+                 StringUtils.stringifyException(e));
       }
       Thread.sleep(1000);
     }
@@ -1391,8 +1390,6 @@ public class JobTracker extends LifecycleServiceWithWorkers
                                        tokenMaxLifetime,
                                        tokenRenewInterval,
                                        DELEGATION_TOKEN_GC_INTERVAL);
-    this.conf = conf;
-    setConf(conf);
 
     //
     // Grab some static constants
@@ -1423,6 +1420,8 @@ public class JobTracker extends LifecycleServiceWithWorkers
 
     // This is a directory of temporary submission files.  We delete it
     // on startup, and can delete any files that we're done with
+    this.conf = conf;
+    setConf(conf);
 
     initializeTaskMemoryRelatedConfig();
 
@@ -1439,8 +1438,6 @@ public class JobTracker extends LifecycleServiceWithWorkers
       = conf.getClass(JT_TASK_SCHEDULER,
           JobQueueTaskScheduler.class, TaskScheduler.class);
     taskScheduler = (TaskScheduler) ReflectionUtils.newInstance(schedulerClass, conf);
-    //LOOK AT THIS TODO
-    taskScheduler.setTaskTrackerManager(this);
   }
                                            
   /**
@@ -1474,7 +1471,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
     }
     //start the secret manager daemon thread.
     secretManager.startThreads();
-
+    
     int handlerCount = conf.getInt(JT_IPC_HANDLER_COUNT, 10);
     this.interTrackerServer = RPC.getServer(ClientProtocol.class,
                                             this,
@@ -1609,8 +1606,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
         LOG.warn("Bailing out ... ");
         throw ace;
       } catch (IOException ie) {
-        LOG.info("problem cleaning system directory: " + systemDir + ": " + ie,
-                ie);
+        LOG.info("problem cleaning system directory: " + systemDir, ie);
       }
       Thread.sleep(FS_ACCESS_RETRY_PERIOD);
     }
@@ -1760,7 +1756,6 @@ public class JobTracker extends LifecycleServiceWithWorkers
       }
     }
 
-
     taskScheduler.start();
     
     recoveryManager.recover();
@@ -1894,7 +1889,7 @@ public class JobTracker extends LifecycleServiceWithWorkers
       }
       fs = null;
     }
-
+    
     if (jobHistory != null) {
       jobHistory.shutDown();
     }
