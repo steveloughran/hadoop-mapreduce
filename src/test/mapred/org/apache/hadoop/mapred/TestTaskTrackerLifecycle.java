@@ -28,18 +28,18 @@ import java.io.File;
 import java.io.IOException;
 
 /**
- * Test that the task tracker follows the service lifecycle
+ * Test that the {@link TaskTracker} follows the {@link LifecycleService} 
+ * lifecycle
  */
 
 public class TestTaskTrackerLifecycle extends Assert {
   private TaskTracker tracker;
 
   /**
-   * Tears down the fixture, for example, close a network connection. This method
-   * is called after a test is executed.
+   * At the end of each test run, close any non-null TaskTracker
    */
   @After
-  public void tearDown() throws Exception {
+  public void tearDown() {
     LifecycleService.close(tracker);
   }
 
@@ -78,7 +78,7 @@ public class TestTaskTrackerLifecycle extends Assert {
   }
 
   /**
-   * Test that if a tracker isn't started, we can still terminate it cleanly
+   * Test that if a tracker isn't started, it can still be closed 
    * @throws Throwable on a failure
    */
   @Test
@@ -87,8 +87,14 @@ public class TestTaskTrackerLifecycle extends Assert {
     tracker.close();
   }
 
+  /**
+   * Expect the classic {@link TaskTracker#TaskTracker(JobConf)} method
+   * tries to start the service, as it always does, and that if it cannot
+   * start then it fails.
+   * @throws Throwable if something goes wrong
+   */
   @Test
-  public void testOrphanTrackerFailure() throws Throwable {
+  public void testClassicTrackerConstructorTriesToStartsService() throws Throwable {
     try {
       tracker = new TaskTracker(createJobConf());
       fail("Expected a failure");
@@ -97,6 +103,11 @@ public class TestTaskTrackerLifecycle extends Assert {
     }
   }
 
+  /**
+   * Expect the TT to fail to start from its {@link TaskTracker#start()} method
+   * and is then in the failed state.
+   * @throws Throwable if something goes wrong
+   */
   @Test
   public void testFailingTracker() throws Throwable {
     tracker = new TaskTracker(createJobConf(), false);
@@ -109,8 +120,16 @@ public class TestTaskTrackerLifecycle extends Assert {
     }
   }
 
+
+  /**
+   * Check that the {@link LifecycleService#startService(LifecycleService)}
+   * method not only tries to start the service, if it fails it is pushed into
+   * the closed state. Then check that a second attempt to close the service
+   * does not have any adverse effects.
+   * @throws Throwable if something goes wrong
+   */
   @Test
-  public void testStartedTracker() throws Throwable {
+  public void testStartServiceOperation() throws Throwable {
     tracker = new TaskTracker(createJobConf(), false);
     try {
       LifecycleService.startService(tracker);
