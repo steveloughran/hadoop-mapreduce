@@ -3934,7 +3934,7 @@ public class TaskTracker
   /**
    * Return a string that is useful in logs and debugging
    *
-   * @return state of the job tracker
+   * @return state of the task tracker
    */
   @Override
   public String toString() {
