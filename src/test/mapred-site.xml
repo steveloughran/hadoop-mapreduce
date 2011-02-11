@@ -27,6 +27,10 @@
   <value>10</value>
 </property>
 <property>
+  <name>hadoop.security.authentication</name>
+  <value>simple</value>
+</property>
+<property>
   <name>mapreduce.jobtracker.hosts.exclude.filename</name>
   <value>hosts.exclude</value>
   <description></description>
@@ -37,8 +41,11 @@
   <description></description>
 </property>
 <property>
-  <name>mapreduce.jobtracker.staging.root.dir</name>
-  <value>${hadoop.tmp.dir}/staging</value>
-  <description></description>
+  <name>mapred.child.java.opts</name>
+  <value>-Xmx200m -Djava.net.preferIPv4Stack=true</value>
+</property>
+<property>
+  <name>mapreduce.jobtracker.persist.jobstatus.active</name>
+  <value>false</value>
 </property>
 </configuration>

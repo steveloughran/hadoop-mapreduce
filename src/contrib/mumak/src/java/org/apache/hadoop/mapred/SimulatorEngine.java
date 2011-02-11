@@ -19,15 +19,22 @@ package org.apache.hadoop.mapred;
 
 import java.io.IOException;
 import java.io.PrintStream;
-import java.util.ArrayList;
-import java.util.Iterator;
 import java.util.List;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.Map;
+import java.util.Iterator;
+import java.util.Random;
 import java.util.regex.Pattern;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapred.JobStatus;
 import org.apache.hadoop.mapred.SimulatorEvent;
 import org.apache.hadoop.mapred.SimulatorEventQueue;
 import org.apache.hadoop.mapred.JobCompleteEvent;
@@ -43,6 +50,7 @@ import org.apache.hadoop.tools.rumen.LoggedNetworkTopology;
 import org.apache.hadoop.tools.rumen.MachineNode;
 import org.apache.hadoop.tools.rumen.RackNode;
 import org.apache.hadoop.tools.rumen.ZombieCluster;
+import org.apache.hadoop.tools.rumen.RandomSeedGenerator;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -55,9 +63,8 @@ import org.apache.hadoop.util.ToolRunner;
  */
 public class SimulatorEngine extends Configured implements Tool {
   public static final List<SimulatorEvent> EMPTY_EVENTS = new ArrayList<SimulatorEvent>();
-  private static final int DEFAULT_MAP_SLOTS_PER_NODE = 2;
-  private static final int DEFAULT_REDUCE_SLOTS_PER_NODE = 2;
-
+  /** Default number of milliseconds required to boot up the entire cluster. */
+  public static final int DEFAULT_CLUSTER_STARTUP_DURATION = 100*1000;
   protected final SimulatorEventQueue queue = new SimulatorEventQueue();
   String traceFile;
   String topologyFile;
@@ -66,39 +73,89 @@ public class SimulatorEngine extends Configured implements Tool {
   boolean shutdown = false;
   long terminateTime = Long.MAX_VALUE;
   long currentTime;
+  /** The HashSet for storing all the simulated threads useful for 
+   * job initialization for capacity scheduler.
+   */
+  HashSet<SimulatorCSJobInitializationThread> threadSet;
+  /** The log object to send our messages to; only used for debugging. */
+  private static final Log LOG = LogFactory.getLog(SimulatorEngine.class);
   
+  /** 
+   * Master random seed read from the configuration file, if present.
+   * It is (only) used for creating sub seeds for all the random number 
+   * generators.
+   */
+  long masterRandomSeed;
+                                                                                                                                            
   /**
    * Start simulated task trackers based on topology.
-   * @param clusterStory The cluster topology.
+   * @param clusterStory the cluster topology.
+   * @param jobConf configuration object.
    * @param now
    *    time stamp when the simulator is started, {@link SimulatorTaskTracker}s
-   *    are started shortly after this time stamp
+   *    are started uniformly randomly spread in [now,now+startDuration).
+   * @return time stamp by which the entire cluster is booted up and all task
+   *    trackers are sending hearbeats in their steady rate.
    */
-  void startTaskTrackers(ClusterStory clusterStory, long now) {
+  long startTaskTrackers(ClusterStory cluster, JobConf jobConf, long now) {
     /** port assigned to TTs, incremented by 1 for each TT */
     int port = 10000;
-    long ms = now + 100;
+    int numTaskTrackers = 0;
 
-    for (MachineNode node : clusterStory.getMachines()) {
-      String hostname = node.getName();
-      String taskTrackerName = "tracker_" + hostname + ":localhost/127.0.0.1:"
-          + port;
+    Random random = new Random(RandomSeedGenerator.getSeed(
+       "forStartTaskTrackers()", masterRandomSeed));
+
+    final int startDuration = jobConf.getInt("mumak.cluster.startup.duration",
+        DEFAULT_CLUSTER_STARTUP_DURATION);
+    
+    for (MachineNode node : cluster.getMachines()) {
+      jobConf.set("mumak.tasktracker.host.name", node.getName());
+      jobConf.set("mumak.tasktracker.tracker.name",
+          "tracker_" + node.getName() + ":localhost/127.0.0.1:" + port);
+      long subRandomSeed = RandomSeedGenerator.getSeed(
+         "forTaskTracker" + numTaskTrackers, masterRandomSeed);
+      jobConf.setLong("mumak.tasktracker.random.seed", subRandomSeed);
+      numTaskTrackers++;
       port++;
-      SimulatorTaskTracker tt = new SimulatorTaskTracker(jt, taskTrackerName,
-          hostname, node.getMapSlots(), node.getReduceSlots());
-      queue.addAll(tt.init(ms++));
+      SimulatorTaskTracker tt = new SimulatorTaskTracker(jt, jobConf);
+      long firstHeartbeat = now + random.nextInt(startDuration);
+      queue.addAll(tt.init(firstHeartbeat));
     }
+    
+    // In startDuration + heartbeat interval of the full cluster time each 
+    // TT is started up and told on its 2nd heartbeat to beat at a rate 
+    // corresponding to the steady state of the cluster    
+    long clusterSteady = now + startDuration + jt.getNextHeartbeatInterval();
+    return clusterSteady;
   }
-  
-  /**
-   * Initiate components in the simulation.
-   * @throws InterruptedException
-   * @throws IOException if trace or topology files cannot be open
-   */
-  @SuppressWarnings("deprecation")
-  void init() throws InterruptedException, IOException {
-    long now = System.currentTimeMillis();
 
+  /**
+   * Reads a positive long integer from a configuration.
+   *
+   * @param Configuration conf configuration objects
+   * @param String propertyName name of the property
+   * @return time
+   */
+  long getTimeProperty(Configuration conf, String propertyName,
+                       long defaultValue) 
+      throws IllegalArgumentException {
+    // possible improvement: change date format to human readable ?
+    long time = conf.getLong(propertyName, defaultValue);
+    if (time <= 0) {
+      throw new IllegalArgumentException(propertyName + "time must be positive: "
+          + time);
+    }
+    return time;
+  }
+   
+  /**
+   * Creates the configuration for mumak simulation. This is kept modular mostly for 
+   * testing purposes. so that the standard configuration can be modified before passing
+   * it to the init() function.
+   * @return JobConf: the configuration for the SimulatorJobTracker 
+   */
+    
+  JobConf createMumakConf() {
     JobConf jobConf = new JobConf(getConf());
     jobConf.setClass("topology.node.switch.mapping.impl",
         StaticMapping.class, DNSToSwitchMapping.class);
@@ -112,7 +169,30 @@ public class SimulatorEngine extends Configured implements Tool {
     jobConf.setUser("mumak");
     jobConf.set("mapred.system.dir", 
         jobConf.get("hadoop.log.dir", "/tmp/hadoop-"+jobConf.getUser()) + "/mapred/system");
-    jobConf.set("mapred.jobtracker.taskScheduler", JobQueueTaskScheduler.class.getName());
+    
+    return jobConf;
+  }
+
+  /**
+   * Initialize components in the simulation.
+   * @throws InterruptedException
+   * @throws IOException if trace or topology files cannot be opened.
+   */
+  void init() throws InterruptedException, IOException {
+    
+    JobConf jobConf = createMumakConf();
+    init(jobConf);
+  }
+    
+  /**
+   * Initiate components in the simulation. The JobConf is
+   * create separately and passed to the init().
+   * @param JobConf: The configuration for the jobtracker.
+   * @throws InterruptedException
+   * @throws IOException if trace or topology files cannot be opened.
+   */
+  @SuppressWarnings("deprecation")
+  void init(JobConf jobConf) throws InterruptedException, IOException {
     
     FileSystem lfs = FileSystem.getLocal(getConf());
     Path logPath =
@@ -121,19 +201,29 @@ public class SimulatorEngine extends Configured implements Tool {
     jobConf.set("hadoop.job.history.location", (new Path(logPath, "history")
         .toString()));
     
+    // start time for virtual clock
+    // possible improvement: set default value to sth more meaningful based on
+    // the 1st job
+    long now = getTimeProperty(jobConf, "mumak.start.time", 
+                               System.currentTimeMillis());
+
     jt = SimulatorJobTracker.startTracker(jobConf, now, this);
     jt.offerService();
     
+    masterRandomSeed = jobConf.getLong("mumak.random.seed", System.nanoTime()); 
+    
     // max Map/Reduce tasks per node
-    int maxMaps = getConf().getInt("mapred.tasktracker.map.tasks.maximum",
-        DEFAULT_MAP_SLOTS_PER_NODE);
+    int maxMaps = getConf().getInt(
+        "mapred.tasktracker.map.tasks.maximum",
+        SimulatorTaskTracker.DEFAULT_MAP_SLOTS);
     int maxReduces = getConf().getInt(
         "mapred.tasktracker.reduce.tasks.maximum",
-        DEFAULT_REDUCE_SLOTS_PER_NODE);
+    
+      SimulatorTaskTracker.DEFAULT_REDUCE_SLOTS);
 
     MachineNode defaultNode = new MachineNode.Builder("default", 2)
         .setMapSlots(maxMaps).setReduceSlots(maxReduces).build();
-    
+            
     LoggedNetworkTopology topology = new ClusterTopologyReader(new Path(
         topologyFile), jobConf).get();
     // Setting the static mapping before removing numeric IP hosts.
@@ -142,23 +232,51 @@ public class SimulatorEngine extends Configured implements Tool {
       removeIpHosts(topology);
     }
     ZombieCluster cluster = new ZombieCluster(topology, defaultNode);
-    long firstJobStartTime = now + 60000;
-    JobStoryProducer jobStoryProducer = new SimulatorJobStoryProducer(
-        new Path(traceFile), cluster, firstJobStartTime, jobConf);
     
+    // create TTs based on topology.json  
+    long firstJobStartTime = startTaskTrackers(cluster, jobConf, now);
+
+    long subRandomSeed = RandomSeedGenerator.getSeed("forSimulatorJobStoryProducer",
+                                                     masterRandomSeed);
+    JobStoryProducer jobStoryProducer = new SimulatorJobStoryProducer(
+        new Path(traceFile), cluster, firstJobStartTime, jobConf, subRandomSeed);
+
     final SimulatorJobSubmissionPolicy submissionPolicy = SimulatorJobSubmissionPolicy
         .getPolicy(jobConf);
-    
+
     jc = new SimulatorJobClient(jt, jobStoryProducer, submissionPolicy);
     queue.addAll(jc.init(firstJobStartTime));
 
-    // create TTs based on topology.json     
-    startTaskTrackers(cluster, now);
+    //if the taskScheduler is CapacityTaskScheduler start off the JobInitialization
+    //threads too
+    if (jobConf.get("mapred.jobtracker.taskScheduler").equals
+       (CapacityTaskScheduler.class.getName())) {
+      LOG.info("CapacityScheduler used: starting simulatorThreads");
+      startSimulatorThreadsCapSched(now);
+    }
+    terminateTime = getTimeProperty(jobConf, "mumak.terminate.time",
+                                    Long.MAX_VALUE);
+  }
+  
+  /**
+   * In this function, we collect the set of leaf queues from JobTracker, and 
+   * for each of them creates a simulated thread that performs the same
+   * check as JobInitializationPoller.JobInitializationThread in Capacity Scheduler.  
+   * @param now
+   * @throws IOException
+   */
+  private void startSimulatorThreadsCapSched(long now) throws IOException {
     
-    terminateTime = getConf().getLong("mumak.terminate.time", Long.MAX_VALUE);
-    if (terminateTime <= 0) {
-      throw new IllegalArgumentException("Terminate time must be positive: "
-          + terminateTime);
+    Set<String> queueNames = jt.getQueueManager().getLeafQueueNames();
+    TaskScheduler taskScheduler = jt.getTaskScheduler();
+    threadSet = new HashSet<SimulatorCSJobInitializationThread>();
+    // We create a different thread for each queue and hold a 
+    //reference to  each of them 
+    for (String jobQueue: queueNames) {
+      SimulatorCSJobInitializationThread capThread = 
+        new SimulatorCSJobInitializationThread(taskScheduler,jobQueue);   
+      threadSet.add(capThread);
+      queue.addAll(capThread.init(now));
     }
   }
   

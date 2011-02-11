@@ -40,11 +40,14 @@ import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.mapred.FairScheduler.JobInfo;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapred.FakeObjectUtilities.FakeJobHistory;
+import org.apache.hadoop.mapred.JobInProgress.KillInterruptedException;
 import org.apache.hadoop.mapred.UtilsForTests.FakeClock;
 import org.apache.hadoop.mapreduce.TaskType;
+import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.TaskTracker;
 import org.apache.hadoop.mapreduce.split.JobSplit;
 import org.apache.hadoop.net.Node;
+import org.mortbay.log.Log;
 
 public class TestFairScheduler extends TestCase {
   final static String TEST_DIR = new File(System.getProperty("test.build.data",
@@ -63,6 +66,7 @@ public class TestFairScheduler extends TestCase {
     private int mapCounter = 0;
     private int reduceCounter = 0;
     private final String[][] mapInputLocations; // Array of hosts for each map
+    private boolean initialized;
     
     public FakeJobInProgress(JobConf jobConf,
         FakeTaskTrackerManager taskTrackerManager, 
@@ -79,7 +83,7 @@ public class TestFairScheduler extends TestCase {
       this.nonRunningReduces = new LinkedList<TaskInProgress>();   
       this.runningReduces = new LinkedHashSet<TaskInProgress>();
       this.jobHistory = new FakeJobHistory();
-      initTasks();
+      this.initialized = false;
     }
     
     @Override
@@ -130,6 +134,13 @@ public class TestFairScheduler extends TestCase {
         reduces[i] = new FakeTaskInProgress(getJobID(), i,
             getJobConf(), this);
       }
+      
+      initialized = true;
+    }
+    
+    @Override
+    public boolean inited() {
+      return initialized;
     }
 
     @Override
@@ -398,7 +409,7 @@ public class TestFairScheduler extends TestCase {
     
     @Override
     public int getNextHeartbeatInterval() {
-      return MRConstants.HEARTBEAT_INTERVAL_MIN;
+      return JTConfig.JT_HEARTBEAT_INTERVAL_MIN_DEFAULT;
     }
 
     @Override
@@ -412,7 +423,11 @@ public class TestFairScheduler extends TestCase {
     }
 
     public void initJob (JobInProgress job) {
-      // do nothing
+      try {
+        job.initTasks();
+      } catch (KillInterruptedException e) {
+      } catch (IOException e) {
+      }
     }
     
     public void failJob (JobInProgress job) {
@@ -507,7 +522,8 @@ public class TestFairScheduler extends TestCase {
     conf.setBoolean("mapred.fairscheduler.assignmultiple", assignMultiple);
     // Manually set locality delay because we aren't using a JobTracker so
     // we can't auto-compute it from the heartbeat interval.
-    conf.setLong("mapred.fairscheduler.locality.delay", 10000);
+    conf.setLong("mapred.fairscheduler.locality.delay.node", 5000);
+    conf.setLong("mapred.fairscheduler.locality.delay.rack", 10000);
     taskTrackerManager = new FakeTaskTrackerManager(numRacks, numNodesPerRack);
     clock = new FakeClock();
     scheduler = new FairScheduler(clock, true);
@@ -524,18 +540,23 @@ public class TestFairScheduler extends TestCase {
     }
   }
   
+  private JobInProgress submitJobNotInitialized(int state, int maps, int reduces)
+	    throws IOException {
+    return submitJob(state, maps, reduces, null, null, false);
+  }
+
   private JobInProgress submitJob(int state, int maps, int reduces)
       throws IOException {
-    return submitJob(state, maps, reduces, null, null);
+    return submitJob(state, maps, reduces, null, null, true);
   }
   
   private JobInProgress submitJob(int state, int maps, int reduces, String pool)
       throws IOException {
-    return submitJob(state, maps, reduces, pool, null);
+    return submitJob(state, maps, reduces, pool, null, true);
   }
   
   private JobInProgress submitJob(int state, int maps, int reduces, String pool,
-      String[][] mapInputLocations) throws IOException {
+      String[][] mapInputLocations, boolean initializeJob) throws IOException {
     JobConf jobConf = new JobConf(conf);
     jobConf.setNumMapTasks(maps);
     jobConf.setNumReduceTasks(reduces);
@@ -543,6 +564,9 @@ public class TestFairScheduler extends TestCase {
       jobConf.set(POOL_PROPERTY, pool);
     JobInProgress job = new FakeJobInProgress(jobConf, taskTrackerManager,
         mapInputLocations, UtilsForTests.getJobTracker());
+    if (initializeJob) {
+      taskTrackerManager.initJob(job);
+    }
     job.getStatus().setRunState(state);
     taskTrackerManager.submitJob(job);
     job.startTime = clock.time;
@@ -640,7 +664,6 @@ public class TestFairScheduler extends TestCase {
   }
 
   public void testNonRunningJobsAreIgnored() throws IOException {
-    submitJobs(1, JobStatus.PREP, 10, 10);
     submitJobs(1, JobStatus.SUCCEEDED, 10, 10);
     submitJobs(1, JobStatus.FAILED, 10, 10);
     submitJobs(1, JobStatus.KILLED, 10, 10);
@@ -1344,17 +1367,27 @@ public class TestFairScheduler extends TestCase {
     
     // Submit jobs, advancing time in-between to make sure that they are
     // all submitted at distinct times.
-    JobInProgress job1 = submitJob(JobStatus.RUNNING, 10, 10);
+    JobInProgress job1 = submitJobNotInitialized(JobStatus.PREP, 10, 10);
+    assertTrue(((FakeJobInProgress)job1).inited());
+    job1.getStatus().setRunState(JobStatus.RUNNING);
     JobInfo info1 = scheduler.infos.get(job1);
     advanceTime(10);
-    JobInProgress job2 = submitJob(JobStatus.RUNNING, 10, 10);
+    JobInProgress job2 = submitJobNotInitialized(JobStatus.PREP, 10, 10);
+    assertTrue(((FakeJobInProgress)job2).inited());
+    job2.getStatus().setRunState(JobStatus.RUNNING);
     JobInfo info2 = scheduler.infos.get(job2);
     advanceTime(10);
-    JobInProgress job3 = submitJob(JobStatus.RUNNING, 10, 10);
+    JobInProgress job3 = submitJobNotInitialized(JobStatus.PREP, 10, 10);
     JobInfo info3 = scheduler.infos.get(job3);
     advanceTime(10);
-    JobInProgress job4 = submitJob(JobStatus.RUNNING, 10, 10);
+    JobInProgress job4 = submitJobNotInitialized(JobStatus.PREP, 10, 10);
     JobInfo info4 = scheduler.infos.get(job4);
+    
+    // Only two of the jobs should be initialized.
+    assertTrue(((FakeJobInProgress)job1).inited());
+    assertTrue(((FakeJobInProgress)job2).inited());
+    assertFalse(((FakeJobInProgress)job3).inited());
+    assertFalse(((FakeJobInProgress)job4).inited());
     
     // Check scheduler variables
     assertEquals(2.0,  info1.mapSchedulable.getFairShare());
@@ -1956,6 +1989,101 @@ public class TestFairScheduler extends TestCase {
   }
   
   /**
+   * This test runs on a 3-node (6-slot) cluster to allow 3 pools with fair
+   * shares equal 2 slots to coexist (which makes the half-fair-share 
+   * of each pool equal to 1 so that fair share preemption can kick in). 
+   * 
+   * The test first starts job 1, which takes 3 map slots and 0 reduce slots,
+   * in pool 1.  We then submit job 2 in pool 2, which takes 3 map slots and zero
+   * reduce slots. Finally, we submit a third job, job 3 in pool3, which gets no slots. 
+   * At this point the fair share of each pool will be 6/3 = 2 slots. 
+   * Pool 1 and 2 will be above their fair share and pool 3 will be below half fair share. 
+   * Therefore pool 3 should preempt tasks from both pool 1 & 2 (after a timeout) but 
+   * pools 1 and 2 shouldn't. 
+   */
+  public void testFairSharePreemptionFromMultiplePools() throws Exception {
+	// Create a bigger cluster than normal (3 tasktrackers instead of 2)
+	setUpCluster(1, 3, false);
+	// Enable preemption in scheduler
+	scheduler.preemptionEnabled = true;
+	// Set up pools file with a fair share preemtion timeout of 1 minute
+	PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
+	out.println("<?xml version=\"1.0\"?>");
+	out.println("<allocations>");
+	out.println("<fairSharePreemptionTimeout>60</fairSharePreemptionTimeout>");
+	out.println("</allocations>");
+	out.close();
+	scheduler.getPoolManager().reloadAllocs();
+	 
+	// Grab pools (they'll be created even though they're not in the alloc file)
+	Pool pool1 = scheduler.getPoolManager().getPool("pool1");
+	Pool pool2 = scheduler.getPoolManager().getPool("pool2");
+	Pool pool3 = scheduler.getPoolManager().getPool("pool3");
+
+	// Submit job 1. We advance time by 100 between each task tracker
+	// assignment stage to ensure that the tasks from job1 on tt3 are the ones
+	// that are deterministically preempted first (being the latest launched
+	// tasks in an over-allocated job).
+	JobInProgress job1 = submitJob(JobStatus.RUNNING, 12, 0, "pool1");
+	advanceTime(100);
+	checkAssignment("tt1", "attempt_test_0001_m_000000_0 on tt1");
+	checkAssignment("tt1", "attempt_test_0001_m_000001_0 on tt1");
+	advanceTime(100);
+	checkAssignment("tt2", "attempt_test_0001_m_000002_0 on tt2");
+	advanceTime(100);
+	    
+	// Submit job 2. It should get the last 3 slots.
+	JobInProgress job2 = submitJob(JobStatus.RUNNING, 10, 0, "pool2");
+	advanceTime(100);
+	checkAssignment("tt2", "attempt_test_0002_m_000000_0 on tt2");
+	checkAssignment("tt3", "attempt_test_0002_m_000001_0 on tt3");
+	advanceTime(100);
+	checkAssignment("tt3", "attempt_test_0002_m_000002_0 on tt3");
+
+	advanceTime(100);
+	    
+	// Submit job 3.
+	JobInProgress job3 = submitJob(JobStatus.RUNNING, 10, 0, "pool3");
+	    
+	// Check that after 59 seconds, neither pool can preempt
+	advanceTime(59000);
+	assertEquals(0, scheduler.tasksToPreempt(pool2.getMapSchedulable(),
+			clock.getTime()));
+	assertEquals(0, scheduler.tasksToPreempt(pool2.getReduceSchedulable(),
+	        clock.getTime()));
+	assertEquals(0, scheduler.tasksToPreempt(pool3.getMapSchedulable(),
+	        clock.getTime()));
+	assertEquals(0, scheduler.tasksToPreempt(pool3.getReduceSchedulable(),
+	        clock.getTime()));
+	    
+	// Wait 2 more seconds, so that job 3 has now been in the system for 61s.
+	// Now pool 3 should be able to preempt 2 tasks (its share of 2 rounded
+	// down to its floor), but pool 1 & 2 shouldn't.
+	advanceTime(2000);
+	assertEquals(0, scheduler.tasksToPreempt(pool2.getMapSchedulable(),
+	        clock.getTime()));
+	assertEquals(0, scheduler.tasksToPreempt(pool2.getReduceSchedulable(),
+	        clock.getTime()));
+	assertEquals(2, scheduler.tasksToPreempt(pool3.getMapSchedulable(),
+	        clock.getTime()));
+	assertEquals(0, scheduler.tasksToPreempt(pool3.getReduceSchedulable(),
+	        clock.getTime()));
+	    
+	// Test that the tasks actually get preempted and we can assign new ones.
+	// This should preempt one task each from pool1 and pool2
+	scheduler.preemptTasksIfNecessary();
+	scheduler.update();
+	assertEquals(2, job2.runningMaps());  
+	assertEquals(2, job1.runningMaps());  
+	checkAssignment("tt2", "attempt_test_0003_m_000000_0 on tt2");
+	checkAssignment("tt3", "attempt_test_0003_m_000001_0 on tt3");
+	assertNull(scheduler.assignTasks(tracker("tt1")));
+	assertNull(scheduler.assignTasks(tracker("tt2")));
+	assertNull(scheduler.assignTasks(tracker("tt3")));
+  }
+  
+  
+  /**
    * This test submits a job that takes all 4 slots, and then a second job in
    * a pool that has both a min share of 2 slots with a 60s timeout and a
    * fair share timeout of 60s. After 60 seconds, this pool will be starved
@@ -2157,7 +2285,7 @@ public class TestFairScheduler extends TestCase {
     JobInProgress job1 = submitJob(JobStatus.RUNNING, 1, 0, "pool1",
         new String[][] {
           {"rack2.node2"}
-        });
+        }, true);
     JobInfo info1 = scheduler.infos.get(job1);
     
     // Advance time before submitting another job j2, to make j1 be ahead
@@ -2205,7 +2333,7 @@ public class TestFairScheduler extends TestCase {
     JobInProgress job1 = submitJob(JobStatus.RUNNING, 4, 0, "pool1",
         new String[][] {
           {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"}
-        });
+        }, true);
     JobInfo info1 = scheduler.infos.get(job1);
     
     // Advance time before submitting another job j2, to make j1 be ahead
@@ -2221,8 +2349,8 @@ public class TestFairScheduler extends TestCase {
     checkAssignment("tt3", "attempt_test_0002_m_000004_0 on tt3",
                            "attempt_test_0002_m_000005_0 on tt3");
     
-    // Advance time by 11 seconds to put us past the 10-second locality delay
-    advanceTime(11000);
+    // Advance time by 6 seconds to put us past the 5-second node locality delay
+    advanceTime(6000);
     
     // Finish some tasks on each node
     taskTrackerManager.finishTask("tt1", "attempt_test_0002_m_000000_0");
@@ -2288,7 +2416,7 @@ public class TestFairScheduler extends TestCase {
         new String[][] {
           {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"},
           {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"}, {"rack2.node2"},
-        });
+        }, true);
     JobInfo info1 = scheduler.infos.get(job1);
     advanceTime(100);
     
@@ -2297,8 +2425,8 @@ public class TestFairScheduler extends TestCase {
     assertNull(scheduler.assignTasks(tracker("tt2")));
     assertNull(scheduler.assignTasks(tracker("tt3")));
     
-    // Advance time by 11 seconds to put us past the 10-sec node locality delay
-    advanceTime(11000);
+    // Advance time by 6 seconds to put us past the 5-sec node locality delay
+    advanceTime(6000);
 
     // Check that nothing is assigned on trackers 1-2; the job would assign
     // a task on tracker 3 (rack1.node2) so we skip that one 
@@ -2315,7 +2443,7 @@ public class TestFairScheduler extends TestCase {
 
     // Check that delay scheduling info is properly set
     assertEquals(info1.lastMapLocalityLevel, LocalityLevel.NODE);
-    assertEquals(info1.timeWaitedForLocalMap, 11200);
+    assertEquals(info1.timeWaitedForLocalMap, 6200);
     assertEquals(info1.skippedAtLastHeartbeat, true);
     
     // Advance time by 11 seconds to put us past the 10-sec rack locality delay
@@ -2576,6 +2704,7 @@ public class TestFairScheduler extends TestCase {
     jobConf.set(EXPLICIT_POOL_PROPERTY, "poolA");
     JobInProgress job3 = new FakeJobInProgress(jobConf, taskTrackerManager,
         null, UtilsForTests.getJobTracker());
+    job3.initTasks();
     job3.getStatus().setRunState(JobStatus.RUNNING);
     taskTrackerManager.submitJob(job3);
 
@@ -2591,6 +2720,7 @@ public class TestFairScheduler extends TestCase {
     jobConf2.set(POOL_PROPERTY, "poolA");
     JobInProgress job4 = new FakeJobInProgress(jobConf2, taskTrackerManager,
         null, UtilsForTests.getJobTracker());
+    job4.initTasks();
     job4.getStatus().setRunState(JobStatus.RUNNING);
     taskTrackerManager.submitJob(job4);
 
@@ -2612,12 +2742,89 @@ public class TestFairScheduler extends TestCase {
   protected void checkAssignment(String taskTrackerName,
       String... expectedTasks) throws IOException {
     List<Task> tasks = scheduler.assignTasks(tracker(taskTrackerName));
+    assertNotNull(tasks);
     System.out.println("Assigned tasks:");
     for (int i = 0; i < tasks.size(); i++)
       System.out.println("- " + tasks.get(i));
-    assertNotNull(tasks);
     assertEquals(expectedTasks.length, tasks.size());
     for (int i = 0; i < tasks.size(); i++)
       assertEquals("assignment " + i, expectedTasks[i], tasks.get(i).toString());
+  }
+
+  /**
+   * This test submits a job that takes all 2 slots in a pool has both a min
+   * share of 2 slots with minshare timeout of 5s, and then a second job in
+   * default pool with a fair share timeout of 5s. After 60 seconds, this pool
+   * will be starved of fair share (2 slots of each type), and we test that it
+   * does not kill more than 2 tasks of each type.
+   */
+  public void testFairSharePreemptionWithShortTimeout() throws Exception {
+    // Enable preemption in scheduler
+    scheduler.preemptionEnabled = true;
+    // Set up pools file
+    PrintWriter out = new PrintWriter(new FileWriter(ALLOC_FILE));
+    out.println("<?xml version=\"1.0\"?>");
+    out.println("<allocations>");
+    out.println("<fairSharePreemptionTimeout>5</fairSharePreemptionTimeout>");
+    out.println("<pool name=\"pool1\">");
+    out.println("<minMaps>2</minMaps>");
+    out.println("<minReduces>2</minReduces>");
+    out.println("<minSharePreemptionTimeout>5</minSharePreemptionTimeout>");
+    out.println("</pool>");
+    out.println("</allocations>");
+    out.close();
+    scheduler.getPoolManager().reloadAllocs();
+    Pool pool1 = scheduler.getPoolManager().getPool("pool1");
+    Pool defaultPool = scheduler.getPoolManager().getPool("default");
+
+    // Submit job 1 and assign all slots to it. Sleep a bit before assigning
+    // tasks on tt1 and tt2 to ensure that the ones on tt2 get preempted first.
+    JobInProgress job1 = submitJob(JobStatus.RUNNING, 10, 10, "pool1");
+    JobInfo info1 = scheduler.infos.get(job1);
+    checkAssignment("tt1", "attempt_test_0001_m_000000_0 on tt1");
+    checkAssignment("tt1", "attempt_test_0001_r_000000_0 on tt1");
+    checkAssignment("tt1", "attempt_test_0001_m_000001_0 on tt1");
+    checkAssignment("tt1", "attempt_test_0001_r_000001_0 on tt1");
+    advanceTime(100);
+    checkAssignment("tt2", "attempt_test_0001_m_000002_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0001_r_000002_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0001_m_000003_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0001_r_000003_0 on tt2");
+
+    advanceTime(10000);
+    assertEquals(4,    info1.mapSchedulable.getRunningTasks());
+    assertEquals(4,    info1.reduceSchedulable.getRunningTasks());
+    assertEquals(4.0,  info1.mapSchedulable.getFairShare());
+    assertEquals(4.0,  info1.reduceSchedulable.getFairShare());
+    // Ten seconds later, submit job 2.
+    JobInProgress job2 = submitJob(JobStatus.RUNNING, 10, 10, "default");
+
+    // Advance time by 6 seconds without update the scheduler.
+    // This simulates the time gap between update and task preemption.
+    clock.advance(6000);
+    assertEquals(4,    info1.mapSchedulable.getRunningTasks());
+    assertEquals(4,    info1.reduceSchedulable.getRunningTasks());
+    assertEquals(2.0,  info1.mapSchedulable.getFairShare());
+    assertEquals(2.0,  info1.reduceSchedulable.getFairShare());
+    assertEquals(0, scheduler.tasksToPreempt(pool1.getMapSchedulable(),
+        clock.getTime()));
+    assertEquals(0, scheduler.tasksToPreempt(pool1.getReduceSchedulable(),
+        clock.getTime()));
+    assertEquals(2, scheduler.tasksToPreempt(defaultPool.getMapSchedulable(),
+        clock.getTime()));
+    assertEquals(2, scheduler.tasksToPreempt(defaultPool.getReduceSchedulable(),
+        clock.getTime()));
+
+    // Test that the tasks actually get preempted and we can assign new ones
+    scheduler.preemptTasksIfNecessary();
+    scheduler.update();
+    assertEquals(2, job1.runningMaps());
+    assertEquals(2, job1.runningReduces());
+    checkAssignment("tt2", "attempt_test_0002_m_000000_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0002_r_000000_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0002_m_000001_0 on tt2");
+    checkAssignment("tt2", "attempt_test_0002_r_000001_0 on tt2");
+    assertNull(scheduler.assignTasks(tracker("tt1")));
+    assertNull(scheduler.assignTasks(tracker("tt2")));
   }
 }

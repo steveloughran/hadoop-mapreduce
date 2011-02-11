@@ -41,9 +41,12 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.RawLocalFileSystem;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import static org.apache.hadoop.mapred.QueueManagerTestUtils.*;
 import org.apache.hadoop.mapreduce.Cluster;
 import org.apache.hadoop.mapreduce.Counters;
+import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.JobID;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.TaskType;
@@ -54,6 +57,8 @@ import org.apache.hadoop.mapreduce.jobhistory.JobSubmittedEvent;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistoryParser.JobInfo;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistoryParser.TaskAttemptInfo;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistoryParser.TaskInfo;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authorize.AccessControlList;
 
 /**
  *
@@ -352,10 +357,10 @@ public class TestJobHistory extends TestCase {
                "match the expected value", 
                conf.getJobName().equals(
                jobInfo.getJobname()));
-
+    String user = UserGroupInformation.getCurrentUser().getUserName();
     assertTrue("User Name of job obtained from history file did not " +
                "match the expected value", 
-               conf.getUser().equals(
+               user.equals(
                jobInfo.getUsername()));
 
     // Validate job counters
@@ -582,6 +587,24 @@ public class TestJobHistory extends TestCase {
     validateJobLevelKeyValues(mr, job, jobInfo, conf);
     validateTaskLevelKeyValues(mr, job, jobInfo);
     validateTaskAttemptLevelKeyValues(mr, job, jobInfo);
+    
+    // Also JobACLs should be correct
+    if (mr.getJobTrackerRunner().getJobTracker()
+        .areACLsEnabled()) {
+      AccessControlList acl = new AccessControlList(
+          conf.get(JobACL.VIEW_JOB.getAclName(), " "));
+      assertTrue("VIEW_JOB ACL is not properly logged to history file.",
+          acl.toString().equals(
+          jobInfo.getJobACLs().get(JobACL.VIEW_JOB).toString()));
+      acl = new AccessControlList(
+          conf.get(JobACL.MODIFY_JOB.getAclName(), " "));
+      assertTrue("MODIFY_JOB ACL is not properly logged to history file.",
+          acl.toString().equals(
+          jobInfo.getJobACLs().get(JobACL.MODIFY_JOB).toString()));
+    }
+    
+    // Validate the job queue name
+    assertTrue(jobInfo.getJobQueueName().equals(conf.getQueueName()));
   }
 
   public void testDoneFolderOnHDFS() throws IOException, InterruptedException {
@@ -707,10 +730,11 @@ public class TestJobHistory extends TestCase {
   /** Run a job that will be succeeded and validate its history file format
    *  and its content.
    */
-  public void testJobHistoryFile() throws IOException {
+  public void testJobHistoryFile() throws Exception {
     MiniMRCluster mr = null;
     try {
       JobConf conf = new JobConf();
+
       // keep for less time
       conf.setLong("mapred.jobtracker.retirejob.check", 1000);
       conf.setLong("mapred.jobtracker.retirejob.interval", 1000);
@@ -718,7 +742,10 @@ public class TestJobHistory extends TestCase {
       //set the done folder location
       String doneFolder = TEST_ROOT_DIR + "history_done";
       conf.set(JTConfig.JT_JOBHISTORY_COMPLETED_LOCATION, doneFolder);
-      
+
+      // Enable ACLs so that they are logged to history
+      conf.setBoolean(MRConfig.MR_ACLS_ENABLED, true);
+
       mr = new MiniMRCluster(2, "file:///", 3, null, null, conf);
 
       // run the TCs
@@ -733,6 +760,10 @@ public class TestJobHistory extends TestCase {
 
       //Disable speculative execution
       conf.setSpeculativeExecution(false);
+
+      // set the job acls
+      conf.set(JobACL.VIEW_JOB.getAclName(), "user1,user2 group1,group2");
+      conf.set(JobACL.MODIFY_JOB.getAclName(), "user3,user4 group3,group4");
 
       // Make sure that the job is not removed from memory until we do finish
       // the validation of history file content
@@ -807,9 +838,10 @@ public class TestJobHistory extends TestCase {
       JobConf conf, JobID id, 
       Path doneDir) throws IOException {
     String name = null;
+    String user = UserGroupInformation.getCurrentUser().getUserName();
     for (int i = 0; name == null && i < 20; i++) {
       Path path = JobHistory.getJobHistoryFile(
-          jobHistory.getCompletedJobHistoryLocation(), id, conf.getUser());
+          jobHistory.getCompletedJobHistoryLocation(), id, user);
       if (path.getFileSystem(conf).exists(path)) {
         name = path.toString();
       }
@@ -936,8 +968,11 @@ public class TestJobHistory extends TestCase {
       JobHistory jh = jt.getJobHistory();
       final JobID jobId = JobID.forName("job_200809171136_0001");
       jh.setupEventWriter(jobId, conf);
+      Map<JobACL, AccessControlList> jobACLs =
+          new HashMap<JobACL, AccessControlList>();
       JobSubmittedEvent jse =
-        new JobSubmittedEvent(jobId, "job", "user", 12345, "path");
+        new JobSubmittedEvent(jobId, "job", "user", 12345, "path", jobACLs,
+        "default");
       jh.logEvent(jse, jobId);
       jh.closeWriter(jobId);
 

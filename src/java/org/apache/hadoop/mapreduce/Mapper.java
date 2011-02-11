@@ -20,6 +20,8 @@ package org.apache.hadoop.mapreduce;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.compress.CompressionCodec;
@@ -69,16 +71,16 @@ import org.apache.hadoop.mapreduce.task.MapContextImpl;
  * <p>Example:</p>
  * <p><blockquote><pre>
  * public class TokenCounterMapper 
- *     extends Mapper<Object, Text, Text, IntWritable>{
+ *     extends Mapper&lt;Object, Text, Text, IntWritable&gt;{
  *    
  *   private final static IntWritable one = new IntWritable(1);
  *   private Text word = new Text();
  *   
- *   public void map(Object key, Text value, Context context) throws IOException {
+ *   public void map(Object key, Text value, Context context) throws IOException, InterruptedException {
  *     StringTokenizer itr = new StringTokenizer(value.toString());
  *     while (itr.hasMoreTokens()) {
  *       word.set(itr.nextToken());
- *       context.collect(word, one);
+ *       context.write(word, one);
  *     }
  *   }
  * }
@@ -93,6 +95,8 @@ import org.apache.hadoop.mapreduce.task.MapContextImpl;
  * @see Partitioner  
  * @see Reducer
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class Mapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT> {
 
   /**

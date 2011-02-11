@@ -25,18 +25,20 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobID;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.mapred.TaskController;
+import org.apache.hadoop.mapred.TaskLog;
 import org.apache.hadoop.mapred.TaskTracker;
 import org.apache.hadoop.mapred.TaskController.InitializationContext;
+import org.apache.hadoop.mapreduce.JobID;
 
-/**
- * 
- * NOTE: This class is internal only and not intended for users!!
- */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class Localizer {
 
   static final Log LOG = LogFactory.getLog(Localizer.class);
@@ -56,105 +58,6 @@ public class Localizer {
     fs = fileSys;
     localDirs = lDirs;
     taskController = tc;
-  }
-
-  /**
-   * NOTE: This class is internal only class and not intended for users!!
-   * 
-   */
-  public static class PermissionsHandler {
-    /**
-     * Permission information useful for setting permissions for a given path.
-     * Using this, one can set all possible combinations of permissions for the
-     * owner of the file. But permissions for the group and all others can only
-     * be set together, i.e. permissions for group cannot be set different from
-     * those for others and vice versa.
-     */
-    public static class PermissionsInfo {
-      public boolean readPermissions;
-      public boolean writePermissions;
-      public boolean executablePermissions;
-      public boolean readPermsOwnerOnly;
-      public boolean writePermsOwnerOnly;
-      public boolean executePermsOwnerOnly;
-
-      /**
-       * Create a permissions-info object with the given attributes
-       * 
-       * @param readPerms
-       * @param writePerms
-       * @param executePerms
-       * @param readOwnerOnly
-       * @param writeOwnerOnly
-       * @param executeOwnerOnly
-       */
-      public PermissionsInfo(boolean readPerms, boolean writePerms,
-          boolean executePerms, boolean readOwnerOnly, boolean writeOwnerOnly,
-          boolean executeOwnerOnly) {
-        readPermissions = readPerms;
-        writePermissions = writePerms;
-        executablePermissions = executePerms;
-        readPermsOwnerOnly = readOwnerOnly;
-        writePermsOwnerOnly = writeOwnerOnly;
-        executePermsOwnerOnly = executeOwnerOnly;
-      }
-    }
-
-    /**
-     * Set permission on the given file path using the specified permissions
-     * information. We use java api to set permission instead of spawning chmod
-     * processes. This saves a lot of time. Using this, one can set all possible
-     * combinations of permissions for the owner of the file. But permissions
-     * for the group and all others can only be set together, i.e. permissions
-     * for group cannot be set different from those for others and vice versa.
-     * 
-     * This method should satisfy the needs of most of the applications. For
-     * those it doesn't, {@link FileUtil#chmod} can be used.
-     * 
-     * @param f file path
-     * @param pInfo permissions information
-     * @return true if success, false otherwise
-     */
-    public static boolean setPermissions(File f, PermissionsInfo pInfo) {
-      if (pInfo == null) {
-        LOG.debug(" PermissionsInfo is null, returning.");
-        return true;
-      }
-
-      LOG.debug("Setting permission for " + f.getAbsolutePath());
-
-      boolean ret = true;
-
-      // Clear all the flags
-      ret = f.setReadable(false, false) && ret;
-      ret = f.setWritable(false, false) && ret;
-      ret = f.setExecutable(false, false) && ret;
-
-      ret = f.setReadable(pInfo.readPermissions, pInfo.readPermsOwnerOnly);
-      LOG.debug("Readable status for " + f + " set to " + ret);
-      ret =
-          f.setWritable(pInfo.writePermissions, pInfo.writePermsOwnerOnly)
-              && ret;
-      LOG.debug("Writable status for " + f + " set to " + ret);
-      ret =
-          f.setExecutable(pInfo.executablePermissions,
-              pInfo.executePermsOwnerOnly)
-              && ret;
-
-      LOG.debug("Executable status for " + f + " set to " + ret);
-      return ret;
-    }
-
-    /**
-     * Permissions rwxr_xr_x
-     */
-    public static PermissionsInfo sevenFiveFive =
-        new PermissionsInfo(true, true, true, false, true, false);
-    /**
-     * Completely private permissions
-     */
-    public static PermissionsInfo sevenZeroZero =
-        new PermissionsInfo(true, true, true, true, true, true);
   }
 
   // Data-structure for synchronizing localization of user directories.
@@ -213,35 +116,31 @@ public class Localizer {
         if (fs.exists(userDir) || fs.mkdirs(userDir)) {
 
           // Set permissions on the user-directory
-          PermissionsHandler.setPermissions(
-              new File(userDir.toUri().getPath()),
-              PermissionsHandler.sevenZeroZero);
+          fs.setPermission(userDir, new FsPermission((short)0700));
           userDirStatus = true;
 
           // Set up the jobcache directory
-          File jobCacheDir =
-              new File(localDir, TaskTracker.getJobCacheSubdir(user));
-          if (jobCacheDir.exists() || jobCacheDir.mkdirs()) {
+          Path jobCacheDir =
+              new Path(localDir, TaskTracker.getJobCacheSubdir(user));
+          if (fs.exists(jobCacheDir) || fs.mkdirs(jobCacheDir)) {
             // Set permissions on the jobcache-directory
-            PermissionsHandler.setPermissions(jobCacheDir,
-                PermissionsHandler.sevenZeroZero);
+            fs.setPermission(jobCacheDir, new FsPermission((short)0700));
             jobCacheDirStatus = true;
           } else {
             LOG.warn("Unable to create job cache directory : "
-                + jobCacheDir.getPath());
+                + jobCacheDir);
           }
 
           // Set up the cache directory used for distributed cache files
-          File distributedCacheDir =
-              new File(localDir, TaskTracker.getPrivateDistributedCacheDir(user));
-          if (distributedCacheDir.exists() || distributedCacheDir.mkdirs()) {
+          Path distributedCacheDir =
+              new Path(localDir, TaskTracker.getPrivateDistributedCacheDir(user));
+          if (fs.exists(distributedCacheDir) || fs.mkdirs(distributedCacheDir)) {
             // Set permissions on the distcache-directory
-            PermissionsHandler.setPermissions(distributedCacheDir,
-                PermissionsHandler.sevenZeroZero);
+            fs.setPermission(distributedCacheDir, new FsPermission((short)0700));
             distributedCacheDirStatus = true;
           } else {
             LOG.warn("Unable to create distributed-cache directory : "
-                + distributedCacheDir.getPath());
+                + distributedCacheDir);
           }
         } else {
           LOG.warn("Unable to create the user directory : " + userDir);
@@ -310,8 +209,7 @@ public class Localizer {
       initJobDirStatus = initJobDirStatus || jobDirStatus;
 
       // job-dir has to be private to the TT
-      Localizer.PermissionsHandler.setPermissions(new File(jobDir.toUri()
-          .getPath()), Localizer.PermissionsHandler.sevenZeroZero);
+      fs.setPermission(jobDir, new FsPermission((short)0700));
     }
 
     if (!initJobDirStatus) {
@@ -355,7 +253,21 @@ public class Localizer {
     if (!initStatus) {
       throw new IOException("Not able to initialize attempt directories "
           + "in any of the configured local directories for the attempt "
-          + attemptId.toString());
+          + attemptId);
     }
+  }
+
+  /**
+   * Create job log directory and set appropriate permissions for the directory.
+   * 
+   * @param jobId
+   */
+  public void initializeJobLogDir(JobID jobId) throws IOException {
+    Path jobUserLogDir = new Path(TaskLog.getJobDir(jobId).getCanonicalPath());
+    if (!fs.mkdirs(jobUserLogDir)) {
+      throw new IOException("Could not create job user log directory: " +
+                            jobUserLogDir);
+    }
+    fs.setPermission(jobUserLogDir, new FsPermission((short)0700));
   }
 }

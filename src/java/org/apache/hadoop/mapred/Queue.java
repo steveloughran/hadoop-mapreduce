@@ -20,7 +20,7 @@ package org.apache.hadoop.mapred;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.mapreduce.QueueState;
-import org.apache.hadoop.security.SecurityUtil.AccessControlList;
+import org.apache.hadoop.security.authorize.AccessControlList;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -56,34 +56,6 @@ class Queue implements Comparable<Queue>{
   private Set<Queue> children;
 
   private Properties props;
-
-  /**
-   * Enum representing an operation that can be performed on a queue.
-   */
-  static enum QueueOperation {
-    SUBMIT_JOB ("acl-submit-job", false),
-    ADMINISTER_JOBS ("acl-administer-jobs", true);
-    // TODO: Add ACL for LIST_JOBS when we have ability to authenticate
-    //       users in UI
-    // TODO: Add ACL for CHANGE_ACL when we have an admin tool for
-    //       configuring queues.
-
-    private final String aclName;
-    private final boolean jobOwnerAllowed;
-
-    QueueOperation(String aclName, boolean jobOwnerAllowed) {
-      this.aclName = aclName;
-      this.jobOwnerAllowed = jobOwnerAllowed;
-    }
-
-    final String getAclName() {
-      return aclName;
-    }
-
-    final boolean isJobOwnerAllowed() {
-      return jobOwnerAllowed;
-    }
-  }
 
   /**
    * Default constructor is useful in creating the hierarchy.

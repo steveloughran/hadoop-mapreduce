@@ -21,6 +21,8 @@ import java.io.IOException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.io.compress.CompressionCodec;
@@ -33,10 +35,12 @@ import org.apache.hadoop.mapred.Task;
 import org.apache.hadoop.mapred.TaskStatus;
 import org.apache.hadoop.mapred.TaskUmbilicalProtocol;
 import org.apache.hadoop.mapred.Task.CombineOutputCollector;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.util.Progress;
 
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class Shuffle<K, V> implements ExceptionReporter {
   private static final Log LOG = LogFactory.getLog(Shuffle.class);
   private static final int PROGRESS_FREQUENCY = 2000;
@@ -102,7 +106,7 @@ public class Shuffle<K, V> implements ExceptionReporter {
     eventFetcher.start();
     
     // Start the map-output fetcher threads
-    final int numFetchers = jobConf.getInt(JobContext.SHUFFLE_PARALLEL_COPIES, 5);
+    final int numFetchers = jobConf.getInt(MRJobConfig.SHUFFLE_PARALLEL_COPIES, 5);
     Fetcher<K,V>[] fetchers = new Fetcher[numFetchers];
     for (int i=0; i < numFetchers; ++i) {
       fetchers[i] = new Fetcher<K,V>(jobConf, reduceId, scheduler, merger, 

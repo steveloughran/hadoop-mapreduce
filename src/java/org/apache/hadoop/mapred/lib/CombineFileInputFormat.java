@@ -19,7 +19,11 @@
 package org.apache.hadoop.mapred.lib;
 
 import java.io.IOException;
+import java.util.List;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.fs.PathFilter;
 import org.apache.hadoop.mapred.InputFormat;
 import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.JobConf;
@@ -50,6 +54,8 @@ import org.apache.hadoop.mapreduce.TaskAttemptContext;
  * {@link org.apache.hadoop.mapreduce.lib.input.CombineFileInputFormat}
  */
 @Deprecated
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public abstract class CombineFileInputFormat<K, V>
   extends org.apache.hadoop.mapreduce.lib.input.CombineFileInputFormat<K, V> 
   implements InputFormat<K, V>{
@@ -63,6 +69,27 @@ public abstract class CombineFileInputFormat<K, V>
   public InputSplit[] getSplits(JobConf job, int numSplits) 
     throws IOException {
     return super.getSplits(new Job(job)).toArray(new InputSplit[0]);
+  }
+  
+  /**
+   * Create a new pool and add the filters to it.
+   * A split cannot have files from different pools.
+   * @deprecated Use {@link #createPool(List)}.
+   */
+  @Deprecated
+  protected void createPool(JobConf conf, List<PathFilter> filters) {
+    createPool(filters);
+  }
+
+  /**
+   * Create a new pool and add the filters to it. 
+   * A pathname can satisfy any one of the specified filters.
+   * A split cannot have files from different pools.
+   * @deprecated Use {@link #createPool(PathFilter...)}.
+   */
+  @Deprecated
+  protected void createPool(JobConf conf, PathFilter... filters) {
+    createPool(filters);
   }
 
   /**

@@ -41,6 +41,8 @@ import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 
@@ -49,6 +51,8 @@ import org.apache.hadoop.conf.Configuration;
  * Emits LongWritables containing the record number as 
  * key and DBWritables as value.  
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class DBRecordReader<T extends DBWritable> extends
     RecordReader<LongWritable, T> {
 
@@ -156,6 +160,7 @@ public class DBRecordReader<T extends DBWritable> extends
       }
       if (null != connection) {
         connection.commit();
+        connection.close();
       }
     } catch (SQLException e) {
       throw new IOException(e.getMessage());
@@ -231,7 +236,7 @@ public class DBRecordReader<T extends DBWritable> extends
 
       pos ++;
     } catch (SQLException e) {
-      throw new IOException(e.getMessage());
+      throw new IOException("SQLException in nextKeyValue", e);
     }
     return true;
   }

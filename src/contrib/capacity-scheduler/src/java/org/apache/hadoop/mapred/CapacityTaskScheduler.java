@@ -117,7 +117,9 @@ class CapacityTaskScheduler extends TaskScheduler {
     }
     
     static TaskLookupResult getTaskFoundResult(Task t) {
-      LOG.debug("Returning task " + t);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Returning task " + t);
+      }
       return new TaskLookupResult(t, LookUpStatus.TASK_FOUND);
     }
     static TaskLookupResult getNoTaskFoundResult() {
@@ -238,6 +240,25 @@ class CapacityTaskScheduler extends TaskScheduler {
     TaskSchedulingMgr(CapacityTaskScheduler sched) {
       scheduler = sched;
     }
+  
+    /**
+     * Ceil of result of dividing two integers.
+     * 
+     * This is *not* a utility method. 
+     * Neither <code>a</code> or <code>b</code> should be negative.
+     *  
+     * @param a
+     * @param b
+     * @return ceil of the result of a/b
+     */
+    private int divideAndCeil(int a, int b) {
+      if (b != 0) {
+        return (a + (b - 1)) / b;
+      }
+      
+      LOG.info("divideAndCeil called with a=" + a + " b=" + b);
+      return 0;
+    }
 
     private boolean isUserOverLimit(JobInProgress j,
                                     QueueSchedulingContext qsc) {
@@ -255,13 +276,14 @@ class CapacityTaskScheduler extends TaskScheduler {
           tsi.getNumSlotsOccupied() +
             TaskDataView.getTaskDataView(type).getSlotsPerTask(j);
       }
-      int limit = Math.max((int)(Math.ceil((double)currentCapacity/
-          (double) qsc.getNumJobsByUser().size())),
-          (int)(Math.ceil((double)(qsc.getUlMin() *currentCapacity)/100.0)));
+      int limit = Math.max(divideAndCeil(currentCapacity, qsc.getNumJobsByUser().size()),
+			   divideAndCeil(qsc.getUlMin() * currentCapacity, 100));
       String user = j.getProfile().getUser();
       if (tsi.getNumSlotsOccupiedByUser().get(user) >= limit) {
-        LOG.debug("User " + user + " is over limit, num slots occupied = " +
-            tsi.getNumSlotsOccupiedByUser().get(user) + ", limit = " + limit);
+	if (LOG.isDebugEnabled()) {
+          LOG.debug("User " + user + " is over limit, num slots occupied = " +
+              tsi.getNumSlotsOccupiedByUser().get(user) + ", limit = " + limit);
+	}
         return true;
       }
       else {
@@ -313,8 +335,10 @@ class CapacityTaskScheduler extends TaskScheduler {
             return TaskLookupResult.getTaskFoundResult(t);
           } else {
             //skip to the next job in the queue.
-            LOG.debug("Job " + j.getJobID().toString()
-                + " returned no tasks of type " + type);
+            if (LOG.isDebugEnabled()) {
+              LOG.debug("Job " + j.getJobID().toString()
+                        + " returned no tasks of type " + type);
+            }
           }
         } else {
           // if memory requirements don't match then we check if the job has
@@ -393,8 +417,10 @@ class CapacityTaskScheduler extends TaskScheduler {
       }//end of for loop
 
       // found nothing for this queue, look at the next one.
-      String msg = "Found no task from the queue " + qsi.getQueueName();
-      LOG.debug(msg);
+      if (LOG.isDebugEnabled()) {
+        String msg = "Found no task from the queue " + qsi.getQueueName();
+        LOG.debug(msg);
+      }
       return TaskLookupResult.getNoTaskFoundResult();
     }
 
@@ -578,16 +604,20 @@ class CapacityTaskScheduler extends TaskScheduler {
     @Override
     Task obtainNewTask(TaskTrackerStatus taskTracker, JobInProgress job)
     throws IOException {
-      ClusterStatus clusterStatus =
-        scheduler.taskTrackerManager.getClusterStatus();
-      int numTaskTrackers = clusterStatus.getTaskTrackers();
-      return job.obtainNewMapTask(taskTracker, numTaskTrackers,
-          scheduler.taskTrackerManager.getNumberOfUniqueHosts());
+      synchronized (scheduler) {
+        ClusterStatus clusterStatus = scheduler.taskTrackerManager
+            .getClusterStatus();
+        int numTaskTrackers = clusterStatus.getTaskTrackers();
+        return job.obtainNewMapTask(taskTracker, numTaskTrackers,
+            scheduler.taskTrackerManager.getNumberOfUniqueHosts());
+      }
     }
 
     @Override
     int getClusterCapacity() {
-      return scheduler.taskTrackerManager.getClusterStatus().getMaxMapTasks();
+      synchronized (scheduler) {
+        return scheduler.taskTrackerManager.getClusterStatus().getMaxMapTasks();
+      }
     }
 
     @Override
@@ -600,7 +630,7 @@ class CapacityTaskScheduler extends TaskScheduler {
     boolean hasSpeculativeTask(JobInProgress job, TaskTrackerStatus tts) {
       //Check if job supports speculative map execution first then
       //check if job has speculative maps.
-      return (job.getJobConf().getMapSpeculativeExecution())&& (
+      return (job.getMapSpeculativeExecution()) && (
           hasSpeculativeTask(job.getTasks(TaskType.MAP),
                              tts));
     }
@@ -621,17 +651,21 @@ class CapacityTaskScheduler extends TaskScheduler {
     @Override
     Task obtainNewTask(TaskTrackerStatus taskTracker, JobInProgress job)
     throws IOException {
-      ClusterStatus clusterStatus =
-        scheduler.taskTrackerManager.getClusterStatus();
-      int numTaskTrackers = clusterStatus.getTaskTrackers();
-      return job.obtainNewReduceTask(taskTracker, numTaskTrackers,
-          scheduler.taskTrackerManager.getNumberOfUniqueHosts());
+      synchronized (scheduler) {
+        ClusterStatus clusterStatus = scheduler.taskTrackerManager
+            .getClusterStatus();
+        int numTaskTrackers = clusterStatus.getTaskTrackers();
+        return job.obtainNewReduceTask(taskTracker, numTaskTrackers,
+            scheduler.taskTrackerManager.getNumberOfUniqueHosts());
+      }
     }
 
     @Override
     int getClusterCapacity() {
-      return scheduler.taskTrackerManager.getClusterStatus()
-          .getMaxReduceTasks();
+      synchronized (scheduler) {
+        return scheduler.taskTrackerManager.getClusterStatus()
+            .getMaxReduceTasks();
+      }
     }
 
     @Override
@@ -643,7 +677,7 @@ class CapacityTaskScheduler extends TaskScheduler {
     boolean hasSpeculativeTask(JobInProgress job, TaskTrackerStatus tts) {
       //check if the job supports reduce speculative execution first then
       //check if the job has speculative tasks.
-      return (job.getJobConf().getReduceSpeculativeExecution()) && (
+      return (job.getReduceSpeculativeExecution()) && (
           hasSpeculativeTask(job.getTasks(TaskType.REDUCE),
                              tts));
     }
@@ -863,7 +897,7 @@ class CapacityTaskScheduler extends TaskScheduler {
   }
 
   /** mostly for testing purposes */
-  void setInitializationPoller(JobInitializationPoller p) {
+  synchronized void setInitializationPoller(JobInitializationPoller p) {
     this.initializationPoller = p;
   }
   
@@ -888,7 +922,7 @@ class CapacityTaskScheduler extends TaskScheduler {
    * provided for the test classes
    * lets you update the QSI objects and sorted collections
    */ 
-  void updateContextInfoForTests() {
+  synchronized void updateContextInfoForTests() {
     ClusterStatus c = taskTrackerManager.getClusterStatus();
     int mapClusterCapacity = c.getMaxMapTasks();
     int reduceClusterCapacity = c.getMaxReduceTasks();
@@ -945,13 +979,15 @@ class CapacityTaskScheduler extends TaskScheduler {
     int currentMapSlots = taskTrackerStatus.countOccupiedMapSlots();
     int maxReduceSlots = taskTrackerStatus.getMaxReduceSlots();
     int currentReduceSlots = taskTrackerStatus.countOccupiedReduceSlots();
-    LOG.debug("TT asking for task, max maps="
-      + taskTrackerStatus.getMaxMapSlots() + 
-        ", run maps=" + taskTrackerStatus.countMapTasks() + ", max reds=" + 
-        taskTrackerStatus.getMaxReduceSlots() + ", run reds=" + 
-        taskTrackerStatus.countReduceTasks() + ", map cap=" + 
-        mapClusterCapacity + ", red cap = " + 
-        reduceClusterCapacity);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("TT asking for task, max maps="
+                + taskTrackerStatus.getMaxMapSlots() + 
+                ", run maps=" + taskTrackerStatus.countMapTasks() + ", max reds=" + 
+                taskTrackerStatus.getMaxReduceSlots() + ", run reds=" + 
+                taskTrackerStatus.countReduceTasks() + ", map cap=" + 
+                mapClusterCapacity + ", red cap = " + 
+                reduceClusterCapacity);
+    }
 
     /* 
      * update all our QSC objects.
@@ -1011,7 +1047,7 @@ class CapacityTaskScheduler extends TaskScheduler {
     return jobCollection;
   }
   
-  JobInitializationPoller getInitializationPoller() {
+  synchronized JobInitializationPoller getInitializationPoller() {
     return initializationPoller;
   }
 

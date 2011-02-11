@@ -24,7 +24,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.net.URLEncoder;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 import java.util.regex.Pattern;
@@ -34,18 +33,14 @@ import java.util.TreeSet;
 import org.apache.commons.cli.BasicParser;
 import org.apache.commons.cli.CommandLine;
 import org.apache.commons.cli.CommandLineParser;
-import org.apache.commons.cli.GnuParser;
-import org.apache.commons.cli.HelpFormatter;
 import org.apache.commons.cli.Option;
 import org.apache.commons.cli.OptionBuilder;
-import org.apache.commons.cli.OptionGroup;
 import org.apache.commons.cli.Options;
-import org.apache.commons.cli.Parser;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRConfig;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.fs.Path;
@@ -71,6 +66,7 @@ import org.apache.hadoop.streaming.io.InputWriter;
 import org.apache.hadoop.streaming.io.OutputReader;
 import org.apache.hadoop.util.GenericOptionsParser;
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.util.RunJar;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 
@@ -119,10 +115,14 @@ public class StreamJob implements Tool {
   
       preProcessArgs();
       parseArgv();
+      if (printUsage) {
+        printUsage(detailedUsage_);
+        return 0;
+      }
       postProcessArgs();
   
       setJobConf();
-    }catch (IllegalArgumentException ex) {
+    } catch (IllegalArgumentException ex) {
       //ignore, since log will already be printed
       // print the log in debug mode.
       LOG.debug("Error in streaming job", ex);
@@ -240,18 +240,23 @@ public class StreamJob implements Tool {
     return cmd;
   }
 
-  void parseArgv(){
-    CommandLine cmdLine = null; 
-    try{
+  void parseArgv() {
+    CommandLine cmdLine = null;
+    try {
       cmdLine = parser.parse(allOptions, argv_);
-    }catch(Exception oe){
+    } catch(Exception oe) {
       LOG.error(oe.getMessage());
       exitUsage(argv_.length > 0 && "-info".equals(argv_[0]));
     }
     
-    if (cmdLine != null){
-      verbose_ =  cmdLine.hasOption("verbose");
+    if (cmdLine != null) {
       detailedUsage_ = cmdLine.hasOption("info");
+      if (cmdLine.hasOption("help") || detailedUsage_) {
+        printUsage = true;
+        return;
+      }
+      verbose_ =  cmdLine.hasOption("verbose");
+      background_ =  cmdLine.hasOption("background");
       debug_ = cmdLine.hasOption("debug")? debug_ + 1 : debug_;
       
       String[] values = cmdLine.getOptionValues("input");
@@ -270,15 +275,17 @@ public class StreamJob implements Tool {
       
       values = cmdLine.getOptionValues("file");
       if (values != null && values.length > 0) {
+        LOG.warn("-file option is deprecated, please use generic option" +
+        		" -files instead.");
         StringBuilder unpackRegex = new StringBuilder(
-          config_.getPattern(JobContext.JAR_UNPACK_PATTERN,
+          config_.getPattern(MRJobConfig.JAR_UNPACK_PATTERN,
                              JobConf.UNPACK_JAR_PATTERN_DEFAULT).pattern());
         for (String file : values) {
           packageFiles_.add(file);
           String fname = new File(file).getName();
           unpackRegex.append("|(?:").append(Pattern.quote(fname)).append(")");
         }
-        config_.setPattern(JobContext.JAR_UNPACK_PATTERN,
+        config_.setPattern(MRJobConfig.JAR_UNPACK_PATTERN,
                            Pattern.compile(unpackRegex.toString()));
         validate(packageFiles_);
       }
@@ -333,7 +340,7 @@ public class StreamJob implements Tool {
           addTaskEnvironment_ += s;
         }
       }
-    }else {
+    } else {
       exitUsage(argv_.length > 0 && "-info".equals(argv_[0]));
     }
   }
@@ -371,15 +378,17 @@ public class StreamJob implements Tool {
   
   private void setupOptions(){
 
+    // input and output are not required for -info and -help options,
+    // though they are required for streaming job to be run.
     Option input   = createOption("input", 
                                   "DFS input file(s) for the Map step", 
                                   "path", 
                                   Integer.MAX_VALUE, 
-                                  true);  
+                                  false); 
     
     Option output  = createOption("output", 
                                   "DFS output directory for the Reduce step", 
-                                  "path", 1, true); 
+                                  "path", 1, false); 
     Option mapper  = createOption("mapper", 
                                   "The streaming command to run", "cmd", 1, false);
     Option combiner = createOption("combiner", 
@@ -392,8 +401,6 @@ public class StreamJob implements Tool {
                                "file", Integer.MAX_VALUE, false); 
     Option dfs = createOption("dfs", 
                               "Optional. Override DFS configuration", "<h:p>|local", 1, false); 
-    Option jt = createOption("jt", 
-                             "Optional. Override JobTracker configuration", "<h:p>|local", 1, false);
     Option additionalconfspec = createOption("additionalconfspec", 
                                              "Optional.", "spec", 1, false);
     Option inputformat = createOption("inputformat", 
@@ -427,11 +434,11 @@ public class StreamJob implements Tool {
     
     // boolean properties
     
+    Option background = createBoolOption("background", "Submit the job and don't wait till it completes."); 
     Option verbose = createBoolOption("verbose", "print verbose output"); 
     Option info = createBoolOption("info", "print verbose output"); 
     Option help = createBoolOption("help", "print this help message"); 
     Option debug = createBoolOption("debug", "print debug output"); 
-    Option inputtagged = createBoolOption("inputtagged", "inputtagged"); 
     Option lazyOutput = createBoolOption("lazyOutput", "create outputs lazily");
     
     allOptions = new Options().
@@ -442,7 +449,6 @@ public class StreamJob implements Tool {
       addOption(reducer).
       addOption(file).
       addOption(dfs).
-      addOption(jt).
       addOption(additionalconfspec).
       addOption(inputformat).
       addOption(outputformat).
@@ -456,111 +462,157 @@ public class StreamJob implements Tool {
       addOption(cacheFile).
       addOption(cacheArchive).
       addOption(io).
+      addOption(background).
       addOption(verbose).
       addOption(info).
       addOption(debug).
-      addOption(inputtagged).
       addOption(help).
       addOption(lazyOutput);
   }
 
   public void exitUsage(boolean detailed) {
-    //         1         2         3         4         5         6         7
-    //1234567890123456789012345678901234567890123456789012345678901234567890123456789
-    
-    System.out.println("Usage: $HADOOP_HOME/bin/hadoop jar \\");
-    System.out.println("          $HADOOP_HOME/hadoop-streaming.jar [options]");
+    printUsage(detailed);
+    fail("");
+  }
+
+  private void printUsage(boolean detailed) {
+    System.out.println("Usage: $HADOOP_HOME/bin/hadoop jar hadoop-streaming.jar"
+        + " [options]");
     System.out.println("Options:");
-    System.out.println("  -input    <path>     DFS input file(s) for the Map step");
-    System.out.println("  -output   <path>     DFS output directory for the Reduce step");
-    System.out.println("  -mapper   <cmd|JavaClassName>      The streaming command to run");
-    System.out.println("  -combiner <cmd|JavaClassName>" + 
-                       " The streaming command to run");
-    System.out.println("  -reducer  <cmd|JavaClassName>      The streaming command to run");
-    System.out.println("  -file     <file>     File/dir to be shipped in the Job jar file");
-    System.out.println("  -inputformat TextInputFormat(default)|SequenceFileAsTextInputFormat|JavaClassName Optional.");
-    System.out.println("  -outputformat TextOutputFormat(default)|JavaClassName  Optional.");
-    System.out.println("  -partitioner JavaClassName  Optional.");
-    System.out.println("  -numReduceTasks <num>  Optional.");
-    System.out.println("  -inputreader <spec>  Optional.");
-    System.out.println("  -cmdenv   <n>=<v>    Optional. Pass env.var to streaming commands");
-    System.out.println("  -mapdebug <path>  Optional. " +
-    "To run this script when a map task fails ");
-    System.out.println("  -reducedebug <path>  Optional." +
-    " To run this script when a reduce task fails ");
-    System.out.println("  -io <identifier>  Optional.");
-    System.out.println("  -lazyOutput Optional. Lazily create Output");
-    System.out.println("  -verbose");
+    System.out.println("  -input          <path> DFS input file(s) for the Map" 
+        + " step.");
+    System.out.println("  -output         <path> DFS output directory for the" 
+        + " Reduce step.");
+    System.out.println("  -mapper         <cmd|JavaClassName> Optional. Command"
+        + " to be run as mapper.");
+    System.out.println("  -combiner       <cmd|JavaClassName> Optional. Command"
+        + " to be run as combiner.");
+    System.out.println("  -reducer        <cmd|JavaClassName> Optional. Command"
+        + " to be run as reducer.");
+    System.out.println("  -file           <file> Optional. File/dir to be "
+        + "shipped in the Job jar file.\n" + 
+        "                  Deprecated. Use generic option \"-files\" instead.");
+    System.out.println("  -inputformat    <TextInputFormat(default)"
+        + "|SequenceFileAsTextInputFormat|JavaClassName>\n"
+        + "                  Optional. The input format class.");
+    System.out.println("  -outputformat   <TextOutputFormat(default)"
+        + "|JavaClassName>\n"
+        + "                  Optional. The output format class.");
+    System.out.println("  -partitioner    <JavaClassName>  Optional. The"
+        + " partitioner class.");
+    System.out.println("  -numReduceTasks <num> Optional. Number of reduce "
+        + "tasks.");
+    System.out.println("  -inputreader    <spec> Optional. Input recordreader"
+        + " spec.");
+    System.out.println("  -cmdenv         <n>=<v> Optional. Pass env.var to"
+        + " streaming commands.");
+    System.out.println("  -mapdebug       <cmd> Optional. "
+        + "To run this script when a map task fails.");
+    System.out.println("  -reducedebug    <cmd> Optional."
+        + " To run this script when a reduce task fails.");
+    System.out.println("  -io             <identifier> Optional. Format to use"
+        + " for input to and output");
+    System.out.println("                  from mapper/reducer commands");
+    System.out.println("  -lazyOutput     Optional. Lazily create Output.");
+    System.out.println("  -background     Optional. Submit the job and don't wait till it completes.");
+    System.out.println("  -verbose        Optional. Print verbose output.");
+    System.out.println("  -info           Optional. Print detailed usage.");
+    System.out.println("  -help           Optional. Print help message.");
     System.out.println();
     GenericOptionsParser.printGenericCommandUsage(System.out);
 
     if (!detailed) {
       System.out.println();      
       System.out.println("For more details about these options:");
-      System.out.println("Use $HADOOP_HOME/bin/hadoop jar build/hadoop-streaming.jar -info");
-      fail("");
+      System.out.println("Use " +
+          "$HADOOP_HOME/bin/hadoop jar hadoop-streaming.jar -info");
+      return;
     }
     System.out.println();
-    System.out.println("In -input: globbing on <path> is supported and can have multiple -input");
-    System.out.println("Default Map input format: a line is a record in UTF-8");
-    System.out.println("  the key part ends at first TAB, the rest of the line is the value");
-    System.out.println("Custom input format: -inputformat package.MyInputFormat ");
-    System.out.println("Map output format, reduce input/output format:");
-    System.out.println("  Format defined by what the mapper command outputs. Line-oriented");
+    System.out.println("Usage tips:");
+    System.out.println("In -input: globbing on <path> is supported and can "
+        + "have multiple -input");
     System.out.println();
-    System.out.println("The files named in the -file argument[s] end up in the");
-    System.out.println("  working directory when the mapper and reducer are run.");
-    System.out.println("  The location of this working directory is unspecified.");
+    System.out.println("Default Map input format: a line is a record in UTF-8 "
+        + "the key part ends at first");
+    System.out.println("  TAB, the rest of the line is the value");
     System.out.println();
-    System.out.println("To set the number of reduce tasks (num. of output files):");
-    System.out.println("  -D " + JobContext.NUM_REDUCES + "=10");
+    System.out.println("To pass a Custom input format:");
+    System.out.println("  -inputformat package.MyInputFormat");
+    System.out.println();
+    System.out.println("Similarly, to pass a custom output format:");
+    System.out.println("  -outputformat package.MyOutputFormat");
+    System.out.println();
+    System.out.println("The files with extensions .class and .jar/.zip," +
+        " specified for the -file");
+    System.out.println("  argument[s], end up in \"classes\" and \"lib\" " +
+        "directories respectively inside");
+    System.out.println("  the working directory when the mapper and reducer are"
+        + " run. All other files");
+    System.out.println("  specified for the -file argument[s]" +
+        " end up in the working directory when the");
+    System.out.println("  mapper and reducer are run. The location of this " +
+        "working directory is");
+    System.out.println("  unspecified.");
+    System.out.println();
+    System.out.println("To set the number of reduce tasks (num. of output " +
+        "files) as, say 10:");
+    System.out.println("  Use -numReduceTasks 10");
     System.out.println("To skip the sort/combine/shuffle/sort/reduce step:");
     System.out.println("  Use -numReduceTasks 0");
-    System.out
-      .println("  A Task's Map output then becomes a 'side-effect output' rather than a reduce input");
-    System.out
-      .println("  This speeds up processing, This also feels more like \"in-place\" processing");
-    System.out.println("  because the input filename and the map input order are preserved");
-    System.out.println("  This equivalent -reducer NONE");
+    System.out.println("  Map output then becomes a 'side-effect " +
+        "output' rather than a reduce input.");
+    System.out.println("  This speeds up processing. This also feels " +
+        "more like \"in-place\" processing");
+    System.out.println("  because the input filename and the map " +
+        "input order are preserved.");
+    System.out.println("  This is equivalent to -reducer NONE");
     System.out.println();
     System.out.println("To speed up the last maps:");
-    System.out.println("  -D " + JobContext.MAP_SPECULATIVE + "=true");
+    System.out.println("  -D " + MRJobConfig.MAP_SPECULATIVE + "=true");
     System.out.println("To speed up the last reduces:");
-    System.out.println("  -D " + JobContext.REDUCE_SPECULATIVE + "=true");
+    System.out.println("  -D " + MRJobConfig.REDUCE_SPECULATIVE + "=true");
     System.out.println("To name the job (appears in the JobTracker Web UI):");
-    System.out.println("  -D " + JobContext.JOB_NAME + "='My Job'");
+    System.out.println("  -D " + MRJobConfig.JOB_NAME + "='My Job'");
     System.out.println("To change the local temp directory:");
     System.out.println("  -D dfs.data.dir=/tmp/dfs");
     System.out.println("  -D stream.tmpdir=/tmp/streaming");
-    System.out.println("Additional local temp directories with -cluster local:");
+    System.out.println("Additional local temp directories with -jt local:");
     System.out.println("  -D " + MRConfig.LOCAL_DIR + "=/tmp/local");
     System.out.println("  -D " + JTConfig.JT_SYSTEM_DIR + "=/tmp/system");
     System.out.println("  -D " + MRConfig.TEMP_DIR + "=/tmp/temp");
     System.out.println("To treat tasks with non-zero exit status as SUCCEDED:");    
     System.out.println("  -D stream.non.zero.exit.is.failure=false");
-    System.out.println("Use a custom hadoopStreaming build along a standard hadoop install:");
-    System.out.println("  $HADOOP_HOME/bin/hadoop jar /path/my-hadoop-streaming.jar [...]\\");
-    System.out
-      .println("    [...] -D stream.shipped.hadoopstreaming=/path/my-hadoop-streaming.jar");
+    System.out.println("Use a custom hadoop streaming build along with standard"
+        + " hadoop install:");
+    System.out.println("  $HADOOP_HOME/bin/hadoop jar " +
+        "/path/my-hadoop-streaming.jar [...]\\");
+    System.out.println("    [...] -D stream.shipped.hadoopstreaming=" +
+        "/path/my-hadoop-streaming.jar");
     System.out.println("For more details about jobconf parameters see:");
     System.out.println("  http://wiki.apache.org/hadoop/JobConfFile");
-    System.out.println("To set an environement variable in a streaming command:");
+    System.out.println("To set an environement variable in a streaming " +
+        "command:");
     System.out.println("   -cmdenv EXAMPLE_DIR=/home/example/dictionaries/");
     System.out.println();
     System.out.println("Shortcut:");
-    System.out
-      .println("   setenv HSTREAMING \"$HADOOP_HOME/bin/hadoop jar $HADOOP_HOME/hadoop-streaming.jar\"");
+    System.out.println("   setenv HSTREAMING \"$HADOOP_HOME/bin/hadoop jar " +
+        "hadoop-streaming.jar\"");
     System.out.println();
-    System.out.println("Example: $HSTREAMING -mapper \"/usr/local/bin/perl5 filter.pl\"");
-    System.out.println("           -file /local/filter.pl -input \"/logs/0604*/*\" [...]");
-    System.out.println("  Ships a script, invokes the non-shipped perl interpreter");
-    System.out.println("  Shipped files go to the working directory so filter.pl is found by perl");
-    System.out.println("  Input files are all the daily logs for days in month 2006-04");
-    fail("");
+    System.out.println("Example: $HSTREAMING -mapper " +
+        "\"/usr/local/bin/perl5 filter.pl\"");
+    System.out.println("           -file /local/filter.pl -input " +
+        "\"/logs/0604*/*\" [...]");
+    System.out.println("  Ships a script, invokes the non-shipped perl " +
+        "interpreter. Shipped files go to");
+    System.out.println("  the working directory so filter.pl is found by perl. "
+        + "Input files are all the");
+    System.out.println("  daily logs for days in month 2006-04");
   }
 
   public void fail(String message) {    
     System.err.println(message);
+    System.err.println("Try -help for more information");
     throw new IllegalArgumentException(message);
   }
 
@@ -667,7 +719,6 @@ public class StreamJob implements Tool {
       FileInputFormat.addInputPaths(jobConf_, 
                         (String) inputSpecs_.get(i));
     }
-    jobConf_.set("stream.numinputspecs", "" + inputSpecs_.size());
 
     String defaultPackage = this.getClass().getPackage().getName();
     Class c;
@@ -738,25 +789,15 @@ public class StreamJob implements Tool {
     jobConf_.setClass("stream.reduce.input.writer.class",
       idResolver.getInputWriterClass(), InputWriter.class);
     
-    idResolver.resolve(jobConf_.get("stream.map.output", IdentifierResolver.TEXT_ID));
-    jobConf_.setClass("stream.map.output.reader.class",
-      idResolver.getOutputReaderClass(), OutputReader.class);
-    jobConf_.setMapOutputKeyClass(idResolver.getOutputKeyClass());
-    jobConf_.setMapOutputValueClass(idResolver.getOutputValueClass());
-    
-    idResolver.resolve(jobConf_.get("stream.reduce.output", IdentifierResolver.TEXT_ID));
-    jobConf_.setClass("stream.reduce.output.reader.class",
-      idResolver.getOutputReaderClass(), OutputReader.class);
-    jobConf_.setOutputKeyClass(idResolver.getOutputKeyClass());
-    jobConf_.setOutputValueClass(idResolver.getOutputValueClass());
-    
     jobConf_.set("stream.addenvironment", addTaskEnvironment_);
 
+    boolean isMapperACommand = false;
     if (mapCmd_ != null) {
       c = StreamUtil.goodClassOrNull(jobConf_, mapCmd_, defaultPackage);
       if (c != null) {
         jobConf_.setMapperClass(c);
       } else {
+        isMapperACommand = true;
         jobConf_.setMapperClass(PipeMapper.class);
         jobConf_.setMapRunnerClass(PipeMapRunner.class);
         jobConf_.set("stream.map.streamprocessor", 
@@ -775,23 +816,60 @@ public class StreamJob implements Tool {
       }
     }
 
-    boolean reducerNone_ = false;
-    if (redCmd_ != null) {
-      reducerNone_ = redCmd_.equals(REDUCE_NONE);
-      if (redCmd_.compareToIgnoreCase("aggregate") == 0) {
-        jobConf_.setReducerClass(ValueAggregatorReducer.class);
-        jobConf_.setCombinerClass(ValueAggregatorCombiner.class);
-      } else {
+    if (numReduceTasksSpec_!= null) {
+      int numReduceTasks = Integer.parseInt(numReduceTasksSpec_);
+      jobConf_.setNumReduceTasks(numReduceTasks);
+    }
 
-        c = StreamUtil.goodClassOrNull(jobConf_, redCmd_, defaultPackage);
-        if (c != null) {
-          jobConf_.setReducerClass(c);
+    boolean isReducerACommand = false;
+    if (redCmd_ != null) {
+      if (redCmd_.equals(REDUCE_NONE)) {
+        jobConf_.setNumReduceTasks(0);
+      }
+      if (jobConf_.getNumReduceTasks() != 0) {
+        if (redCmd_.compareToIgnoreCase("aggregate") == 0) {
+          jobConf_.setReducerClass(ValueAggregatorReducer.class);
+          jobConf_.setCombinerClass(ValueAggregatorCombiner.class);
         } else {
-          jobConf_.setReducerClass(PipeReducer.class);
-          jobConf_.set("stream.reduce.streamprocessor", URLEncoder.encode(
-              redCmd_, "UTF-8"));
+
+          c = StreamUtil.goodClassOrNull(jobConf_, redCmd_, defaultPackage);
+          if (c != null) {
+            jobConf_.setReducerClass(c);
+          } else {
+            isReducerACommand = true;
+            jobConf_.setReducerClass(PipeReducer.class);
+            jobConf_.set("stream.reduce.streamprocessor", URLEncoder.encode(
+                redCmd_, "UTF-8"));
+          }
         }
       }
+    }
+
+    idResolver.resolve(jobConf_.get("stream.map.output",
+        IdentifierResolver.TEXT_ID));
+    jobConf_.setClass("stream.map.output.reader.class",
+      idResolver.getOutputReaderClass(), OutputReader.class);
+    if (isMapperACommand) {
+      // if mapper is a command, then map output key/value classes come from the
+      // idResolver
+      jobConf_.setMapOutputKeyClass(idResolver.getOutputKeyClass());
+      jobConf_.setMapOutputValueClass(idResolver.getOutputValueClass());
+
+      if (jobConf_.getNumReduceTasks() == 0) {
+        jobConf_.setOutputKeyClass(idResolver.getOutputKeyClass());
+        jobConf_.setOutputValueClass(idResolver.getOutputValueClass());
+      }
+    }
+
+    idResolver.resolve(jobConf_.get("stream.reduce.output",
+        IdentifierResolver.TEXT_ID));
+    jobConf_.setClass("stream.reduce.output.reader.class",
+      idResolver.getOutputReaderClass(), OutputReader.class);
+    if (isReducerACommand) {
+      // if reducer is a command, then output key/value classes come from the
+      // idResolver
+      jobConf_.setOutputKeyClass(idResolver.getOutputKeyClass());
+      jobConf_.setOutputValueClass(idResolver.getOutputValueClass());
     }
 
     if (inReaderSpec_ != null) {
@@ -838,14 +916,6 @@ public class StreamJob implements Tool {
       } else {
         fail("-partitioner : class not found : " + partitionerSpec_);
       }
-    }
-    
-    if (numReduceTasksSpec_!= null) {
-      int numReduceTasks = Integer.parseInt(numReduceTasksSpec_);
-      jobConf_.setNumReduceTasks(numReduceTasks);
-    }
-    if (reducerNone_) {
-      jobConf_.setNumReduceTasks(0);
     }
     
     if(mapDebugSpec_ != null){
@@ -922,45 +992,23 @@ public class StreamJob implements Tool {
     if (jar_ != null && isLocalHadoop()) {
       // getAbs became required when shell and subvm have different working dirs...
       File wd = new File(".").getAbsoluteFile();
-      StreamUtil.unJar(new File(jar_), wd);
+      RunJar.unJar(new File(jar_), wd);
     }
 
     // if jobConf_ changes must recreate a JobClient
     jc_ = new JobClient(jobConf_);
-    boolean error = true;
     running_ = null;
-    String lastReport = null;
     try {
       running_ = jc_.submitJob(jobConf_);
       jobId_ = running_.getID();
-
-      LOG.info("getLocalDirs(): " + Arrays.asList(jobConf_.getLocalDirs()));
-      LOG.info("Running job: " + jobId_);
       jobInfo();
-
-      while (!running_.isComplete()) {
-        try {
-          Thread.sleep(1000);
-        } catch (InterruptedException e) {
-        }
-        running_ = jc_.getJob(jobId_);
-        String report = null;
-        report = " map " + Math.round(running_.mapProgress() * 100) + "%  reduce "
-          + Math.round(running_.reduceProgress() * 100) + "%";
-
-        if (!report.equals(lastReport)) {
-          LOG.info(report);
-          lastReport = report;
-        }
+      if (background_) {
+        LOG.info("Job is running in background.");
+      } else if (!jc_.monitorAndPrintJob(jobConf_, running_)) {
+        LOG.error("Job not Successful!");
+        return 1;
       }
-      if (!running_.isSuccessful()) {
-        jobInfo();
-	LOG.error("Job not Successful!");
-	return 1;
-      }
-      LOG.info("Job complete: " + jobId_);
-      LOG.info("Output: " + output_);
-      error = false;
+      LOG.info("Output directory: " + output_);
     } catch(FileNotFoundException fe) {
       LOG.error("Error launching job , bad input path : " + fe.getMessage());
       return 2;
@@ -974,19 +1022,20 @@ public class StreamJob implements Tool {
     } catch(IOException ioe) {
       LOG.error("Error Launching job : " + ioe.getMessage());
       return 5;
+    } catch (InterruptedException ie) {
+      LOG.error("Error monitoring job : " + ie.getMessage());
+      return 6;
     } finally {
-      if (error && (running_ != null)) {
-        LOG.info("killJob...");
-        running_.killJob();
-      }
       jc_.close();
     }
     return 0;
   }
 
   protected String[] argv_;
+  protected boolean background_;
   protected boolean verbose_;
   protected boolean detailedUsage_;
+  protected boolean printUsage = false;
   protected int debug_;
 
   protected Environment env_;

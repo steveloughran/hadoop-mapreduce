@@ -24,6 +24,8 @@ import java.lang.reflect.*;
 import org.apache.hadoop.fs.FileSystem;
 
 import org.apache.hadoop.mapreduce.*;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 
 /**
@@ -34,7 +36,8 @@ import org.apache.hadoop.conf.Configuration;
  * these data chunks from different files.
  * @see CombineFileSplit
  */
-
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class CombineFileRecordReader<K, V> extends RecordReader<K, V> {
 
   static final Class [] constructorSignature = new Class [] 
@@ -56,6 +59,9 @@ public class CombineFileRecordReader<K, V> extends RecordReader<K, V> {
       TaskAttemptContext context) throws IOException, InterruptedException {
     this.split = (CombineFileSplit)split;
     this.context = context;
+    if (null != this.curReader) {
+      this.curReader.initialize(split, context);
+    }
   }
   
   public boolean nextKeyValue() throws IOException, InterruptedException {
@@ -86,8 +92,13 @@ public class CombineFileRecordReader<K, V> extends RecordReader<K, V> {
   /**
    * return progress based on the amount of data processed so far.
    */
-  public float getProgress() throws IOException {
-    return Math.min(1.0f,  progress/(float)(split.getLength()));
+  public float getProgress() throws IOException, InterruptedException {
+    long subprogress = 0;    // bytes processed in current split
+    if (null != curReader) {
+      // idx is always one past the current subsplit's true index.
+      subprogress = (long)(curReader.getProgress() * split.getLength(idx - 1));
+    }
+    return Math.min(1.0f,  (progress + subprogress)/(float)(split.getLength()));
   }
   
   /**
@@ -135,14 +146,20 @@ public class CombineFileRecordReader<K, V> extends RecordReader<K, V> {
 
     // get a record reader for the idx-th chunk
     try {
+      Configuration conf = context.getConfiguration();
+      // setup some helper config variables.
+      conf.set(MRJobConfig.MAP_INPUT_FILE, split.getPath(idx).toString());
+      conf.setLong(MRJobConfig.MAP_INPUT_START, split.getOffset(idx));
+      conf.setLong(MRJobConfig.MAP_INPUT_PATH, split.getLength(idx));
+
       curReader =  rrConstructor.newInstance(new Object [] 
                             {split, context, Integer.valueOf(idx)});
 
-      Configuration conf = context.getConfiguration();
-      // setup some helper config variables.
-      conf.set(JobContext.MAP_INPUT_FILE, split.getPath(idx).toString());
-      conf.setLong(JobContext.MAP_INPUT_START, split.getOffset(idx));
-      conf.setLong(JobContext.MAP_INPUT_PATH, split.getLength(idx));
+      if (idx > 0) {
+        // initialize() for the first RecordReader will be called by MapTask;
+        // we're responsible for initializing subsequent RecordReaders.
+        curReader.initialize(split, context);
+      }
     } catch (Exception e) {
       throw new RuntimeException (e);
     }

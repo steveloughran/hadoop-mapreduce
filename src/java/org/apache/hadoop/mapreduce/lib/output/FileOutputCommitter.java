@@ -23,12 +23,15 @@ import java.net.URI;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobStatus;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.OutputCommitter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
@@ -37,6 +40,8 @@ import org.apache.hadoop.util.StringUtils;
 /** An {@link OutputCommitter} that commits files specified 
  * in job output directory i.e. ${mapreduce.output.fileoutputformat.outputdir}. 
  **/
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class FileOutputCommitter extends OutputCommitter {
 
   private static final Log LOG = LogFactory.getLog(FileOutputCommitter.class);
@@ -92,7 +97,7 @@ public class FileOutputCommitter extends OutputCommitter {
   }
   
   // Create a _success file in the job's output dir
-  private void markOutputDirSuccessful(JobContext context) throws IOException {
+  private void markOutputDirSuccessful(MRJobConfig context) throws IOException {
     if (outputPath != null) {
       // create a file in the output folder to mark the job completion
       Path filePath = new Path(outputPath, SUCCEEDED_FILE_NAME);
@@ -200,7 +205,7 @@ public class FileOutputCommitter extends OutputCommitter {
         }
       }
       LOG.debug("Moved " + taskOutput + " to " + finalOutputPath);
-    } else if(fs.getFileStatus(taskOutput).isDir()) {
+    } else if(fs.getFileStatus(taskOutput).isDirectory()) {
       FileStatus[] paths = fs.listStatus(taskOutput);
       Path finalOutputPath = getFinalPath(jobOutputDir, taskOutput, workPath);
       fs.mkdirs(finalOutputPath);
@@ -214,16 +219,13 @@ public class FileOutputCommitter extends OutputCommitter {
 
   /**
    * Delete the work directory
+   * @throws IOException 
    */
   @Override
-  public void abortTask(TaskAttemptContext context) {
-    try {
-      if (workPath != null) { 
-        context.progress();
-        outputFileSystem.delete(workPath, true);
-      }
-    } catch (IOException ie) {
-      LOG.warn("Error discarding output" + StringUtils.stringifyException(ie));
+  public void abortTask(TaskAttemptContext context) throws IOException {
+    if (workPath != null) { 
+      context.progress();
+      outputFileSystem.delete(workPath, true);
     }
   }
 

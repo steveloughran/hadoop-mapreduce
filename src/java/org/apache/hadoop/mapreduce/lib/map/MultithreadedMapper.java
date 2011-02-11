@@ -19,6 +19,8 @@
 package org.apache.hadoop.mapreduce.lib.map;
 
 import org.apache.hadoop.util.ReflectionUtils;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.InputSplit;
@@ -54,6 +56,8 @@ import java.util.List;
  * value is 10 threads.
  * <p>
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class MultithreadedMapper<K1, V1, K2, V2> 
   extends Mapper<K1, V1, K2, V2> {
 
@@ -242,6 +246,7 @@ public class MultithreadedMapper<K1, V1, K2, V2>
     private Mapper<K1,V1,K2,V2> mapper;
     private Context subcontext;
     private Throwable throwable;
+    private RecordReader<K1,V1> reader = new SubMapRecordReader();
 
     MapRunner(Context context) throws IOException, InterruptedException {
       mapper = ReflectionUtils.newInstance(mapClass, 
@@ -249,22 +254,20 @@ public class MultithreadedMapper<K1, V1, K2, V2>
       MapContext<K1, V1, K2, V2> mapContext = 
         new MapContextImpl<K1, V1, K2, V2>(outer.getConfiguration(), 
                                            outer.getTaskAttemptID(),
-                                           new SubMapRecordReader(),
+                                           reader,
                                            new SubMapRecordWriter(), 
                                            context.getOutputCommitter(),
                                            new SubMapStatusReporter(),
                                            outer.getInputSplit());
       subcontext = new WrappedMapper<K1, V1, K2, V2>().getMapContext(mapContext);
-    }
-
-    public Throwable getThrowable() {
-      return throwable;
+      reader.initialize(context.getInputSplit(), context);
     }
 
     @Override
     public void run() {
       try {
         mapper.run(subcontext);
+        reader.close();
       } catch (Throwable ie) {
         throwable = ie;
       }

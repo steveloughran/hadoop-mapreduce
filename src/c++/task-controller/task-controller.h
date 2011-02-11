@@ -46,7 +46,8 @@ enum command {
   KILL_TASK_JVM,
   RUN_DEBUG_SCRIPT,
   SIGQUIT_TASK_JVM,
-  ENABLE_TASK_FOR_CLEANUP
+  ENABLE_TASK_FOR_CLEANUP,
+  ENABLE_JOB_FOR_CLEANUP
 };
 
 enum errorcodes {
@@ -72,7 +73,9 @@ enum errorcodes {
   INITIALIZE_USER_FAILED, //20
   UNABLE_TO_EXECUTE_DEBUG_SCRIPT, //21
   INVALID_CONF_DIR, //22
-  UNABLE_TO_BUILD_PATH //23
+  UNABLE_TO_BUILD_PATH, //23
+  INVALID_TASKCONTROLLER_PERMISSIONS, //24
+  PREPARE_JOB_LOGS_FAILED, //25
 };
 
 #define USER_DIR_PATTERN "%s/taskTracker/%s"
@@ -85,7 +88,11 @@ enum errorcodes {
 
 #define JOB_DIR_TO_ATTEMPT_DIR_PATTERN "%s/%s"
 
-#define ATTEMPT_LOG_DIR_PATTERN "%s/userlogs/%s"
+#define JOB_LOG_DIR_PATTERN "%s/userlogs/%s"
+
+#define JOB_LOG_DIR_TO_JOB_ACLS_FILE_PATTERN "%s/job-acls.xml"
+
+#define ATTEMPT_LOG_DIR_PATTERN JOB_LOG_DIR_PATTERN"/%s"
 
 #define TASK_SCRIPT_PATTERN "%s/%s/taskjvm.sh"
 
@@ -94,6 +101,8 @@ enum errorcodes {
 #define TT_SYS_DIR_KEY "mapreduce.cluster.local.dir"
 
 #define TT_LOG_DIR_KEY "hadoop.log.dir"
+
+#define TT_GROUP_KEY "mapreduce.tasktracker.group"
 
 #ifndef HADOOP_CONF_DIR
   #define EXEC_PATTERN "/bin/task-controller"
@@ -123,6 +132,9 @@ int kill_user_task(const char *user, const char *task_pid, int sig);
 
 int enable_task_for_cleanup(const char *tt_root, const char *user,
                             const char *jobid, const char *dir_to_be_deleted);
+
+int enable_job_for_cleanup(const char *tt_root, const char *user,
+                           const char *jobid);
 
 int prepare_attempt_directory(const char *attempt_dir, const char *user);
 

@@ -21,6 +21,8 @@ package org.apache.hadoop.mapreduce.lib.reduce;
 import java.io.IOException;
 import java.net.URI;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.Path;
@@ -35,11 +37,14 @@ import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.ReduceContext;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.security.Credentials;
 
 /**
  * A {@link Reducer} which wraps a given one to allow for custom 
  * {@link Reducer.Context} implementations.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class WrappedReducer<KEYIN, VALUEIN, KEYOUT, VALUEOUT> 
     extends Reducer<KEYIN, VALUEIN, KEYOUT, VALUEOUT> {
 
@@ -53,6 +58,7 @@ public class WrappedReducer<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     return new Context(reduceContext);
   }
   
+  @InterfaceStability.Evolving
   public class Context 
       extends Reducer<KEYIN, VALUEIN, KEYOUT, VALUEOUT>.Context {
 
@@ -304,6 +310,11 @@ public class WrappedReducer<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     @Override
     public String getUser() {
       return reduceContext.getUser();
+    }
+
+    @Override
+    public Credentials getCredentials() {
+      return reduceContext.getCredentials();
     }
   }
 }

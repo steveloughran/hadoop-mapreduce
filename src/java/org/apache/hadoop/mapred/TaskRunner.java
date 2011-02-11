@@ -24,6 +24,7 @@ import java.io.OutputStream;
 import java.io.PrintStream;
 import java.net.InetSocketAddress;
 import java.net.URI;
+import java.security.PrivilegedExceptionAction;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -32,17 +33,19 @@ import java.util.Vector;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.filecache.TaskDistributedCacheManager;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
-import org.apache.hadoop.mapreduce.server.tasktracker.Localizer;
+import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.fs.FSError;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.log4j.Level;
@@ -72,19 +75,12 @@ abstract class TaskRunner extends Thread {
   protected JobConf conf;
   JvmManager jvmManager;
 
-  /** 
-   * for cleaning up old map outputs
-   */
-  protected MapOutputFile mapOutputFile;
-
   public TaskRunner(TaskTracker.TaskInProgress tip, TaskTracker tracker, 
       JobConf conf) {
     this.tip = tip;
     this.t = tip.getTask();
     this.tracker = tracker;
     this.conf = conf;
-    this.mapOutputFile = new MapOutputFile();
-    this.mapOutputFile.setConf(conf);
     this.jvmManager = tracker.getJvmManagerInstance();
   }
 
@@ -93,13 +89,6 @@ abstract class TaskRunner extends Thread {
   public TaskTracker getTracker() { return tracker; }
 
   public JvmManager getJvmManager() { return jvmManager; }
-
-  /** Called to assemble this task's input.  This method is run in the parent
-   * process before the child is spawned.  It should not execute user code,
-   * only system code. */
-  public boolean prepare() throws IOException {
-    return true;
-  }
 
   /** Called when this task's output is no longer needed.
    * This method is run in the parent process after the child exits.  It should
@@ -165,25 +154,27 @@ abstract class TaskRunner extends Thread {
       //before preparing the job localize 
       //all the archives
       TaskAttemptID taskid = t.getTaskID();
-      LocalDirAllocator lDirAlloc = new LocalDirAllocator(MRConfig.LOCAL_DIR);
-      File workDir = formWorkDir(lDirAlloc, taskid, t.isTaskCleanupTask(), conf);
+      final LocalDirAllocator lDirAlloc = new LocalDirAllocator(MRConfig.LOCAL_DIR);
+      final File workDir = formWorkDir(lDirAlloc, taskid, t.isTaskCleanupTask(), conf);
 
       // We don't create any symlinks yet, so presence/absence of workDir
       // actually on the file system doesn't matter.
-      taskDistributedCacheManager = tracker.getTrackerDistributedCacheManager()
-          .newTaskDistributedCacheManager(conf);
-      taskDistributedCacheManager.setup(lDirAlloc, workDir, TaskTracker
-          .getPrivateDistributedCacheDir(conf.getUser()), 
+      tip.getUGI().doAs(new PrivilegedExceptionAction<Void>() {
+        public Void run() throws IOException {
+          taskDistributedCacheManager = 
+            tracker.getTrackerDistributedCacheManager()
+            .newTaskDistributedCacheManager(conf);
+          taskDistributedCacheManager.setup(lDirAlloc, workDir, TaskTracker
+              .getPrivateDistributedCacheDir(conf.getUser()), 
           TaskTracker.getPublicDistributedCacheDir());
+          return null;
+        }
+      });
 
       // Set up the child task's configuration. After this call, no localization
       // of files should happen in the TaskTracker's process space. Any changes to
       // the conf object after this will NOT be reflected to the child.
       setupChildTaskConfiguration(lDirAlloc);
-
-      if (!prepare()) {
-        return;
-      }
 
       // Build classpath
       List<String> classPaths =
@@ -201,7 +192,7 @@ abstract class TaskRunner extends Thread {
       List<String> setup = getVMSetupCmd();
 
       // Set up the redirection of the task's stdout and stderr streams
-      File[] logFiles = prepareLogFiles(taskid);
+      File[] logFiles = prepareLogFiles(taskid, t.isTaskCleanupTask());
       File stdout = logFiles[0];
       File stderr = logFiles[1];
       tracker.getTaskTrackerInstrumentation().reportTaskLaunch(taskid, stdout,
@@ -211,14 +202,7 @@ abstract class TaskRunner extends Thread {
       errorInfo = getVMEnvironment(errorInfo, workDir, conf, env,
                                    taskid, logSize);
 
-      jvmManager.launchJvm(this, 
-          jvmManager.constructJvmEnv(setup,vargs,stdout,stderr,logSize, 
-              workDir, env, conf));
-      synchronized (lock) {
-        while (!done) {
-          lock.wait();
-        }
-      }
+      launchJvmAndWait(setup, vargs, stdout, stderr, logSize, workDir, env);
       tracker.getTaskTrackerInstrumentation().reportTaskEnd(t.getTaskID());
       if (exitCodeSet) {
         if (!killed && exitCode != 0) {
@@ -232,7 +216,7 @@ abstract class TaskRunner extends Thread {
     } catch (FSError e) {
       LOG.fatal("FSError", e);
       try {
-        tracker.fsError(t.getTaskID(), e.getMessage());
+        tracker.internalFsError(t.getTaskID(), e.getMessage());
       } catch (IOException ie) {
         LOG.fatal(t.getTaskID()+" reporting FSError", ie);
       }
@@ -242,14 +226,15 @@ abstract class TaskRunner extends Thread {
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
       causeThrowable.printStackTrace(new PrintStream(baos));
       try {
-        tracker.reportDiagnosticInfo(t.getTaskID(), baos.toString());
+        tracker.internalReportDiagnosticInfo(t.getTaskID(), baos.toString());
       } catch (IOException e) {
         LOG.warn(t.getTaskID()+" Reporting Diagnostics", e);
       }
     } finally {
       try{
-        taskDistributedCacheManager.release();
-
+        if (taskDistributedCacheManager != null) {
+          taskDistributedCacheManager.release();
+        }
       }catch(IOException ie){
         LOG.warn("Error releasing caches : Cache files might not have been cleaned up");
       }
@@ -262,24 +247,43 @@ abstract class TaskRunner extends Thread {
     }
   }
 
+  void launchJvmAndWait(List<String> setup, Vector<String> vargs, File stdout,
+      File stderr, long logSize, File workDir, Map<String, String> env)
+      throws InterruptedException {
+    jvmManager.launchJvm(this, jvmManager.constructJvmEnv(setup, vargs, stdout,
+        stderr, logSize, workDir, env, conf));
+    synchronized (lock) {
+      while (!done) {
+        lock.wait();
+      }
+    }
+  }
+
   /**
    * Prepare the log files for the task
    * 
    * @param taskid
+   * @param isCleanup
    * @return an array of files. The first file is stdout, the second is stderr.
+   * @throws IOException 
    */
-  static File[] prepareLogFiles(TaskAttemptID taskid) {
+  File[] prepareLogFiles(TaskAttemptID taskid, boolean isCleanup)
+      throws IOException {
     File[] logFiles = new File[2];
-    logFiles[0] = TaskLog.getTaskLogFile(taskid, TaskLog.LogName.STDOUT);
-    logFiles[1] = TaskLog.getTaskLogFile(taskid, TaskLog.LogName.STDERR);
+    logFiles[0] = TaskLog.getTaskLogFile(taskid, isCleanup,
+        TaskLog.LogName.STDOUT);
+    logFiles[1] = TaskLog.getTaskLogFile(taskid, isCleanup,
+        TaskLog.LogName.STDERR);
     File logDir = logFiles[0].getParentFile();
     boolean b = logDir.mkdirs();
     if (!b) {
       LOG.warn("mkdirs failed. Ignoring");
     } else {
-      Localizer.PermissionsHandler.setPermissions(logDir,
-          Localizer.PermissionsHandler.sevenZeroZero);
+      FileSystem localFs = FileSystem.getLocal(conf);
+      localFs.setPermission(new Path(logDir.getCanonicalPath()),
+                            new FsPermission((short)0700));
     }
+
     return logFiles;
   }
 
@@ -310,8 +314,13 @@ abstract class TaskRunner extends Thread {
    * @return
    */
   private List<String> getVMSetupCmd() {
-    String[] ulimitCmd = Shell.getUlimitMemoryCommand(getChildUlimit(conf));
+
+    int ulimit = getChildUlimit(conf);
+    if (ulimit <= 0) {
+      return null;
+    }
     List<String> setup = null;
+    String[] ulimitCmd = Shell.getUlimitMemoryCommand(ulimit);
     if (ulimitCmd != null) {
       setup = new ArrayList<String>();
       for (String arg : ulimitCmd) {
@@ -410,17 +419,13 @@ abstract class TaskRunner extends Thread {
     vargs.add(classPath);
 
     // Setup the log4j prop
-    vargs.add("-Dhadoop.log.dir=" + 
-        new File(System.getProperty("hadoop.log.dir")
-        ).getAbsolutePath());
-    vargs.add("-Dhadoop.root.logger=" + getLogLevel(conf).toString() + ",TLA");
-    vargs.add("-Dhadoop.tasklog.taskid=" + taskid);
-    vargs.add("-Dhadoop.tasklog.totalLogFileSize=" + logSize);
+    setupLog4jProperties(vargs, taskid, logSize);
 
     if (conf.getProfileEnabled()) {
       if (conf.getProfileTaskRange(t.isMapTask()
                                    ).isIncluded(t.getPartition())) {
-        File prof = TaskLog.getTaskLogFile(taskid, TaskLog.LogName.PROFILE);
+        File prof = TaskLog.getTaskLogFile(taskid, t.isTaskCleanupTask(),
+            TaskLog.LogName.PROFILE);
         vargs.add(String.format(conf.getProfileParams(), prof.toString()));
       }
     }
@@ -432,7 +437,19 @@ abstract class TaskRunner extends Thread {
     vargs.add(address.getAddress().getHostAddress()); 
     vargs.add(Integer.toString(address.getPort())); 
     vargs.add(taskid.toString());                      // pass task identifier
+    // pass task log location
+    vargs.add(TaskLog.getAttemptDir(taskid, t.isTaskCleanupTask()).toString());
     return vargs;
+  }
+
+  private void setupLog4jProperties(Vector<String> vargs, TaskAttemptID taskid,
+      long logSize) {
+    vargs.add("-Dhadoop.log.dir=" + 
+        new File(System.getProperty("hadoop.log.dir")).getAbsolutePath());
+    vargs.add("-Dhadoop.root.logger=" + getLogLevel(conf).toString() + ",TLA");
+    vargs.add("-Dhadoop.tasklog.taskid=" + taskid);
+    vargs.add("-Dhadoop.tasklog.iscleanup=" + t.isTaskCleanupTask());
+    vargs.add("-Dhadoop.tasklog.totalLogFileSize=" + logSize);
   }
 
   /**
@@ -446,7 +463,7 @@ abstract class TaskRunner extends Thread {
       throws IOException {
 
     // add java.io.tmpdir given by mapreduce.task.tmp.dir
-    String tmp = conf.get(JobContext.TASK_TEMP_DIR, "./tmp");
+    String tmp = conf.get(MRJobConfig.TASK_TEMP_DIR, "./tmp");
     Path tmpDir = new Path(tmp);
 
     // if temp directory path is not absolute, prepend it with workDir.
@@ -454,7 +471,7 @@ abstract class TaskRunner extends Thread {
       tmpDir = new Path(workDir.toString(), tmp);
 
       FileSystem localFs = FileSystem.getLocal(conf);
-      if (!localFs.mkdirs(tmpDir) && !localFs.getFileStatus(tmpDir).isDir()) {
+      if (!localFs.mkdirs(tmpDir) && localFs.getFileStatus(tmpDir).isFile()) {
         throw new IOException("Mkdirs failed to create " + tmpDir.toString());
       }
     }
@@ -504,9 +521,9 @@ abstract class TaskRunner extends Thread {
     env.put("LD_LIBRARY_PATH", ldLibraryPath.toString());
     
     // put jobTokenFile name into env
-    String jobTokenFile = conf.get(JobContext.JOB_TOKEN_FILE);
+    String jobTokenFile = conf.get(TokenCache.JOB_TOKENS_FILENAME);
     LOG.debug("putting jobToken file name into environment fn=" + jobTokenFile);
-    env.put("JOB_TOKEN_FILE", jobTokenFile);
+    env.put(UserGroupInformation.HADOOP_TOKEN_FILE_LOCATION, jobTokenFile);
     
     // for the child of task jvm, set hadoop.root.logger
     env.put("HADOOP_ROOT_LOGGER", "INFO,TLA");
@@ -517,6 +534,7 @@ abstract class TaskRunner extends Thread {
       hadoopClientOpts = hadoopClientOpts + " ";
     }
     hadoopClientOpts = hadoopClientOpts + "-Dhadoop.tasklog.taskid=" + taskid
+                       + " -Dhadoop.tasklog.iscleanup=" + t.isTaskCleanupTask()
                        + " -Dhadoop.tasklog.totalLogFileSize=" + logSize;
     env.put("HADOOP_CLIENT_OPTS", hadoopClientOpts);
 
@@ -586,7 +604,7 @@ abstract class TaskRunner extends Thread {
    * process space.
    */
   static void setupChildMapredLocalDirs(Task t, JobConf conf) {
-    String[] localDirs = conf.getStrings(MRConfig.LOCAL_DIR);
+    String[] localDirs = conf.getTrimmedStrings(MRConfig.LOCAL_DIR);
     String jobId = t.getJobID().toString();
     String taskId = t.getTaskID().toString();
     boolean isCleanup = t.isTaskCleanupTask();
@@ -648,39 +666,6 @@ abstract class TaskRunner extends Thread {
   }
   
   /**
-   * Sets permissions recursively and then deletes the contents of dir.
-   * Makes dir empty directory(does not delete dir itself).
-   */
-  static void deleteDirContents(JobConf conf, File dir) throws IOException {
-    FileSystem fs = FileSystem.getLocal(conf);
-    if (fs.exists(new Path(dir.getAbsolutePath()))) {
-      File contents[] = dir.listFiles();
-      if (contents != null) {
-        for (int i = 0; i < contents.length; i++) {
-          try {
-            int ret = 0;
-            if ((ret = FileUtil.chmod(contents[i].getAbsolutePath(),
-                                      "ug+rwx", true)) != 0) {
-              LOG.warn("Unable to chmod for " + contents[i] + 
-                  "; chmod exit status = " + ret);
-            }
-          } catch(InterruptedException e) {
-            LOG.warn("Interrupted while setting permissions for contents of " +
-                "workDir. Not deleting the remaining contents of workDir.");
-            return;
-          }
-          if (!fs.delete(new Path(contents[i].getAbsolutePath()), true)) {
-            LOG.warn("Unable to delete "+ contents[i]);
-          }
-        }
-      }
-    }
-    else {
-      LOG.warn(dir + " does not exist.");
-    }
-  }
-  
-  /**
    * Creates distributed cache symlinks and tmp directory, as appropriate.
    * Note that when we setup the distributed
    * cache, we didn't create the symlinks. This is done on a per task basis
@@ -694,10 +679,10 @@ abstract class TaskRunner extends Thread {
       LOG.debug("Fully deleting contents of " + workDir);
     }
 
-    /** delete only the contents of workDir leaving the directory empty. We
+    /** deletes only the contents of workDir leaving the directory empty. We
      * can't delete the workDir as it is the current working directory.
      */
-    deleteDirContents(conf, workDir);
+    FileUtil.fullyDeleteContents(workDir);
     
     if (DistributedCache.getSymlink(conf)) {
       URI[] archives = DistributedCache.getCacheArchives(conf);

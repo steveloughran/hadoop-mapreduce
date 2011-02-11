@@ -20,6 +20,8 @@ package org.apache.hadoop.mapreduce.lib.input;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
@@ -37,15 +39,15 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.mapreduce.MapContext;
 import org.apache.hadoop.util.LineReader;
 import org.apache.commons.logging.LogFactory;
 import org.apache.commons.logging.Log;
-import org.apache.hadoop.fs.Seekable;
 
 /**
  * Treats keys as offset in file and value as line. 
  */
+@InterfaceAudience.LimitedPrivate({"MapReduce", "Pig"})
+@InterfaceStability.Evolving
 public class LineRecordReader extends RecordReader<LongWritable, Text> {
   private static final Log LOG = LogFactory.getLog(LineRecordReader.class);
   public static final String MAX_LINE_LENGTH = 
@@ -68,7 +70,7 @@ public class LineRecordReader extends RecordReader<LongWritable, Text> {
   public void initialize(InputSplit genericSplit,
                          TaskAttemptContext context) throws IOException {
     FileSplit split = (FileSplit) genericSplit;
-    inputByteCounter = ((MapContext)context).getCounter(
+    inputByteCounter = context.getCounter(
       FileInputFormat.COUNTER_GROUP, FileInputFormat.BYTES_READ);
     Configuration job = context.getConfiguration();
     this.maxLineLength = job.getInt(MAX_LINE_LENGTH, Integer.MAX_VALUE);

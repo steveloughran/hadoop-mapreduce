@@ -36,6 +36,10 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
   private int numJobsCompleted = 0;
   private int numWaitingMaps = 0;
   private int numWaitingReduces = 0;
+  private int numSpeculativeMaps = 0;
+  private int numSpeculativeReduces = 0;
+  private int numDataLocalMaps = 0;
+  private int numRackLocalMaps = 0;
 
   //Cluster status fields.
   private volatile int numMapSlots = 0;
@@ -63,6 +67,10 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
   private int numTrackers = 0;
   private int numTrackersBlackListed = 0;
   private int numTrackersDecommissioned = 0;
+
+  // long, because 2^31 could well be only about a month's worth of
+  // heartbeats, with reasonable assumptions and JobTracker improvements.
+  private long numHeartbeats = 0L;
   
   public JobTrackerMetricsInst(JobTracker tracker, JobConf conf) {
     super(tracker, conf);
@@ -97,6 +105,10 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
       metricsRecord.incrMetric("jobs_completed", numJobsCompleted);
       metricsRecord.incrMetric("waiting_maps", numWaitingMaps);
       metricsRecord.incrMetric("waiting_reduces", numWaitingReduces);
+      metricsRecord.incrMetric("speculative_maps", numSpeculativeMaps);
+      metricsRecord.incrMetric("speculative_reduces", numSpeculativeReduces);
+      metricsRecord.incrMetric("datalocal_maps", numDataLocalMaps);
+      metricsRecord.incrMetric("racklocal_maps", numRackLocalMaps);
       
       metricsRecord.incrMetric("reserved_map_slots", numReservedMapSlots);
       metricsRecord.incrMetric("reserved_reduce_slots", numReservedReduceSlots);
@@ -120,6 +132,8 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
       metricsRecord.setMetric("trackers_decommissioned", 
           numTrackersDecommissioned);
 
+      metricsRecord.incrMetric("heartbeats", numHeartbeats);
+
       numMapTasksLaunched = 0;
       numMapTasksCompleted = 0;
       numMapTasksFailed = 0;
@@ -132,6 +146,10 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
       numWaitingReduces = 0;
       numBlackListedMapSlots = 0;
       numBlackListedReduceSlots = 0;
+      numSpeculativeMaps = 0;
+      numSpeculativeReduces = 0;
+      numDataLocalMaps = 0;
+      numRackLocalMaps = 0;
       
       numReservedMapSlots = 0;
       numReservedReduceSlots = 0;
@@ -152,20 +170,26 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
 
       numTrackers = 0;
       numTrackersBlackListed = 0;
+
+      numHeartbeats = 0L;
     }
     metricsRecord.update();
-
-    if (tracker != null) {
-      for (JobInProgress jip : tracker.getRunningJobs()) {
-        jip.updateMetrics();
-      }
-    }
   }
 
   @Override
   public synchronized void launchMap(TaskAttemptID taskAttemptID) {
     ++numMapTasksLaunched;
     decWaitingMaps(taskAttemptID.getJobID(), 1);
+  }
+
+  @Override
+  public synchronized void launchDataLocalMap(TaskAttemptID taskAttemptID) {
+    ++numDataLocalMaps;
+  }
+
+  @Override
+  public synchronized void launchRackLocalMap(TaskAttemptID taskAttemptID) {
+    ++numRackLocalMaps;
   }
 
   @Override
@@ -177,6 +201,11 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
   public synchronized void failedMap(TaskAttemptID taskAttemptID) {
     ++numMapTasksFailed;
     addWaitingMaps(taskAttemptID.getJobID(), 1);
+  }
+
+  @Override
+  public synchronized void speculateMap(TaskAttemptID taskAttemptID) {
+    ++numSpeculativeMaps;
   }
 
   @Override
@@ -194,6 +223,11 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
   public synchronized void failedReduce(TaskAttemptID taskAttemptID) {
     ++numReduceTasksFailed;
     addWaitingReduces(taskAttemptID.getJobID(), 1);
+  }
+
+  @Override
+  public synchronized void speculateReduce(TaskAttemptID taskAttemptID) {
+    ++numSpeculativeReduces;
   }
 
   @Override
@@ -405,4 +439,9 @@ class JobTrackerMetricsInst extends JobTrackerInstrumentation implements Updater
   {
     numTrackersDecommissioned = trackers;
   }  
+
+  @Override
+  public synchronized void heartbeat() {
+    ++numHeartbeats;
+  }
 }

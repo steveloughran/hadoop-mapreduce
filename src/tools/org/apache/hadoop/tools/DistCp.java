@@ -34,23 +34,22 @@ import java.util.Random;
 import java.util.Stack;
 import java.util.StringTokenizer;
 
-import javax.security.auth.login.LoginException;
-
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileAlreadyExistsException;
 import org.apache.hadoop.fs.FileChecksum;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.FsShell;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.Trash;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.HftpFileSystem;
 import org.apache.hadoop.hdfs.protocol.QuotaExceededException;
 import org.apache.hadoop.io.LongWritable;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
@@ -63,15 +62,15 @@ import org.apache.hadoop.mapred.InputSplit;
 import org.apache.hadoop.mapred.InvalidInputException;
 import org.apache.hadoop.mapred.JobClient;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.JobTracker;
 import org.apache.hadoop.mapred.Mapper;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reporter;
 import org.apache.hadoop.mapred.SequenceFileRecordReader;
-import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobSubmissionFiles;
+import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
@@ -379,7 +378,7 @@ public class DistCp implements Tool {
           srcstat.getReplication(): destFileSys.getDefaultReplication();
       long blockSize = preseved.contains(FileAttribute.BLOCK_SIZE)?
           srcstat.getBlockSize(): destFileSys.getDefaultBlockSize();
-      return destFileSys.create(f, permission, EnumSet.of(CreateFlag.OVERWRITE), sizeBuf, replication,
+      return destFileSys.create(f, permission, true, sizeBuf, replication,
           blockSize, reporter);
     }
 
@@ -489,15 +488,15 @@ public class DistCp implements Tool {
         // destination file rather than destination directory
         Path dstparent = absdst.getParent();
         if (!(destFileSys.exists(dstparent) &&
-              destFileSys.getFileStatus(dstparent).isDir())) {
+              destFileSys.getFileStatus(dstparent).isDirectory())) {
           absdst = dstparent;
         }
       }
       
       // if a directory, ensure created even if empty
-      if (srcstat.isDir()) {
+      if (srcstat.isDirectory()) {
         if (destFileSys.exists(absdst)) {
-          if (!destFileSys.getFileStatus(absdst).isDir()) {
+          if (destFileSys.getFileStatus(absdst).isFile()) {
             throw new IOException("Failed to mkdirs: " + absdst+" is a file.");
           }
         }
@@ -528,7 +527,7 @@ public class DistCp implements Tool {
       }
       else {
         if (destFileSys.exists(absdst) &&
-            destFileSys.getFileStatus(absdst).isDir()) {
+            destFileSys.getFileStatus(absdst).isDirectory()) {
           throw new IOException(absdst + " is a directory");
         }
         if (!destFileSys.mkdirs(absdst.getParent())) {
@@ -736,12 +735,18 @@ public class DistCp implements Tool {
   }
 
   /** Sanity check for srcPath */
-  private static void checkSrcPath(Configuration conf, List<Path> srcPaths
-      ) throws IOException {
+  private static void checkSrcPath(JobConf jobConf, List<Path> srcPaths) 
+  throws IOException {
     List<IOException> rslt = new ArrayList<IOException>();
-    List<Path> unglobbed = new LinkedList<Path>(); 
+    List<Path> unglobbed = new LinkedList<Path>();
+    
+    Path[] ps = new Path[srcPaths.size()];
+    ps = srcPaths.toArray(ps);
+    TokenCache.obtainTokensForNamenodes(jobConf.getCredentials(), ps, jobConf);
+    
+    
     for (Path p : srcPaths) {
-      FileSystem fs = p.getFileSystem(conf);
+      FileSystem fs = p.getFileSystem(jobConf);
       FileStatus[] inputs = fs.globStatus(p);
       
       if(inputs != null && inputs.length > 0) {
@@ -769,9 +774,10 @@ public class DistCp implements Tool {
     if (!args.dryrun || args.flags.contains(Options.UPDATE)) {
       LOG.info("destPath=" + args.dst);
     }
-    checkSrcPath(conf, args.srcs);
 
     JobConf job = createJobConf(conf);
+    
+    checkSrcPath(job, args.srcs);
     if (args.preservedAttributes != null) {
       job.set(PRESERVE_STATUS_LABEL, args.preservedAttributes);
     }
@@ -1168,7 +1174,7 @@ public class DistCp implements Tool {
     }catch (FileNotFoundException e) {
       return false;
     }
-    if (!status.isDir()) {
+    if (status.isFile()) {
       throw new FileAlreadyExistsException("Not a dir: " + dst+" is a file.");
     }
     return true;
@@ -1218,10 +1224,16 @@ public class DistCp implements Tool {
     long maxBytesPerMap = conf.getLong(BYTES_PER_MAP_LABEL, BYTES_PER_MAP);
 
     FileSystem dstfs = args.dst.getFileSystem(conf);
+    
+    // get tokens for all the required FileSystems..
+    TokenCache.obtainTokensForNamenodes(jobConf.getCredentials(), 
+                                        new Path[] {args.dst}, conf);
+    
+    
     boolean dstExists = dstfs.exists(args.dst);
     boolean dstIsDir = false;
     if (dstExists) {
-      dstIsDir = dstfs.getFileStatus(args.dst).isDir();
+      dstIsDir = dstfs.getFileStatus(args.dst).isDirectory();
     }
 
     // default logPath
@@ -1290,9 +1302,9 @@ public class DistCp implements Tool {
         final Path src = srcItr.next();
         FileSystem srcfs = src.getFileSystem(conf);
         FileStatus srcfilestat = srcfs.getFileStatus(src);
-        Path root = special && srcfilestat.isDir()? src: src.getParent();
+        Path root = special && srcfilestat.isDirectory()? src: src.getParent();
         if (dstExists && !dstIsDir &&
-            (args.srcs.size() > 1 || srcfilestat.isDir())) {
+            (args.srcs.size() > 1 || srcfilestat.isDirectory())) {
           // destination should not be a file
           throw new IOException("Destination " + args.dst + " should be a dir" +
                                 " if multiple source paths are there OR if" +
@@ -1324,7 +1336,7 @@ public class DistCp implements Tool {
           }
         }
         
-        if (srcfilestat.isDir()) {
+        if (srcfilestat.isDirectory()) {
           ++srcCount;
           final String dst = makeRelative(root,src);
           if (!update || !dirExists(conf, new Path(args.dst, dst))) {
@@ -1345,7 +1357,7 @@ public class DistCp implements Tool {
             final String dst = makeRelative(root, child.getPath());
             ++srcCount;
 
-            if (child.isDir()) {
+            if (child.isDirectory()) {
               pathstack.push(child);
               if (!update || !dirExists(conf, new Path(args.dst, dst))) {
                 ++dirCount;
@@ -1356,13 +1368,13 @@ public class DistCp implements Tool {
             }
             else {
               Path destPath = new Path(args.dst, dst);
-              if (!cur.isDir() && (args.srcs.size() == 1)) {
+              if (cur.isFile() && (args.srcs.size() == 1)) {
                 // Copying a single file; use dst path provided by user as
                 // destination file rather than destination directory
                 Path dstparent = destPath.getParent();
                 FileSystem destFileSys = destPath.getFileSystem(jobConf);
                 if (!(destFileSys.exists(dstparent) &&
-                    destFileSys.getFileStatus(dstparent).isDir())) {
+                    destFileSys.getFileStatus(dstparent).isDirectory())) {
                   destPath = dstparent;
                 }
               }
@@ -1400,7 +1412,7 @@ public class DistCp implements Tool {
             }
 
             if (!skipPath) {
-              src_writer.append(new LongWritable(child.isDir()? 0: child.getLen()),
+              src_writer.append(new LongWritable(child.isDirectory()? 0: child.getLen()),
                   new FilePair(child, dst));
             }
 
@@ -1408,7 +1420,7 @@ public class DistCp implements Tool {
                 new Text(child.getPath().toString()));
           }
 
-          if (cur.isDir()) {
+          if (cur.isDirectory()) {
             String dst = makeRelative(root, cur.getPath());
             dir_writer.append(new Text(dst), new FilePair(cur, dst));
             if (++dirsyn > SYNC_FILE_MAX) {
@@ -1549,7 +1561,7 @@ public class DistCp implements Tool {
       FileSystem dstfs, FileStatus dstroot, Path dstsorted,
       FileSystem jobfs, Path jobdir, JobConf jobconf, Configuration conf
       ) throws IOException {
-    if (!dstroot.isDir()) {
+    if (dstroot.isFile()) {
       throw new IOException("dst must be a directory when option "
           + Options.DELETE.cmd + " is set, but dst (= " + dstroot.getPath()
           + ") is not a directory.");
@@ -1558,17 +1570,17 @@ public class DistCp implements Tool {
     //write dst lsr results
     final Path dstlsr = new Path(jobdir, "_distcp_dst_lsr");
     final SequenceFile.Writer writer = SequenceFile.createWriter(jobfs, jobconf,
-        dstlsr, Text.class, dstroot.getClass(),
+        dstlsr, Text.class, NullWritable.class,
         SequenceFile.CompressionType.NONE);
     try {
       //do lsr to get all file statuses in dstroot
       final Stack<FileStatus> lsrstack = new Stack<FileStatus>();
       for(lsrstack.push(dstroot); !lsrstack.isEmpty(); ) {
         final FileStatus status = lsrstack.pop();
-        if (status.isDir()) {
+        if (status.isDirectory()) {
           for(FileStatus child : dstfs.listStatus(status.getPath())) {
             String relative = makeRelative(dstroot.getPath(), child.getPath());
-            writer.append(new Text(relative), child);
+            writer.append(new Text(relative), NullWritable.get());
             lsrstack.push(child);
           }
         }
@@ -1580,7 +1592,7 @@ public class DistCp implements Tool {
     //sort lsr results
     final Path sortedlsr = new Path(jobdir, "_distcp_dst_lsr_sorted");
     SequenceFile.Sorter sorter = new SequenceFile.Sorter(jobfs,
-        new Text.Comparator(), Text.class, FileStatus.class, jobconf);
+        new Text.Comparator(), Text.class, NullWritable.class, jobconf);
     sorter.sort(dstlsr, sortedlsr);
 
     //compare lsr list and dst list  
@@ -1593,16 +1605,15 @@ public class DistCp implements Tool {
 
       //compare sorted lsr list and sorted dst list
       final Text lsrpath = new Text();
-      final FileStatus lsrstatus = new FileStatus();
       final Text dstpath = new Text();
       final Text dstfrom = new Text();
-      final FsShell shell = new FsShell(conf);
-      final String[] shellargs = {"-rmr", null};
+      final Trash trash = new Trash(dstfs, conf);
+      Path lastpath = null;
 
       boolean hasnext = dstin.next(dstpath, dstfrom);
-      for(; lsrin.next(lsrpath, lsrstatus); ) {
+      while (lsrin.next(lsrpath, NullWritable.get())) {
         int dst_cmp_lsr = dstpath.compareTo(lsrpath);
-        for(; hasnext && dst_cmp_lsr < 0; ) {
+        while (hasnext && dst_cmp_lsr < 0) {
           hasnext = dstin.next(dstpath, dstfrom);
           dst_cmp_lsr = dstpath.compareTo(lsrpath);
         }
@@ -1610,23 +1621,15 @@ public class DistCp implements Tool {
         if (dst_cmp_lsr == 0) {
           //lsrpath exists in dst, skip it
           hasnext = dstin.next(dstpath, dstfrom);
-        }
-        else {
+        } else {
           //lsrpath does not exist, delete it
-          String s = new Path(dstroot.getPath(), lsrpath.toString()).toString();
+          final Path rmpath = new Path(dstroot.getPath(), lsrpath.toString());
           ++deletedPathsCount;
-          if (shellargs[1] == null || !isAncestorPath(shellargs[1], s)) {
-            shellargs[1] = s;
-            int r = 0;
-            try {
-               r = shell.run(shellargs);
-            } catch(Exception e) {
-              throw new IOException("Exception from shell.", e);
+          if ((lastpath == null || !isAncestorPath(lastpath, rmpath))) {
+            if (!(trash.moveToTrash(rmpath) || dstfs.delete(rmpath, true))) {
+              throw new IOException("Failed to delete " + rmpath);
             }
-            if (r != 0) {
-              throw new IOException("\"" + shellargs[0] + " " + shellargs[1]
-                  + "\" returns non-zero value " + r);
-            }
+            lastpath = rmpath;
           }
         }
       }
@@ -1638,7 +1641,9 @@ public class DistCp implements Tool {
   }
 
   //is x an ancestor path of y?
-  static private boolean isAncestorPath(String x, String y) {
+  static private boolean isAncestorPath(Path xp, Path yp) {
+    final String x = xp.toString();
+    final String y = yp.toString();
     if (!y.startsWith(x)) {
       return false;
     }

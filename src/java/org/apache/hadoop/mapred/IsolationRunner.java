@@ -27,9 +27,13 @@ import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapred.JvmTask;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitIndex;
@@ -42,6 +46,8 @@ import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitIndex;
  * Users may coerce MapReduce to keep task files around by setting 
  * mapreduce.task.files.preserve.failedtasks.  See mapred_tutorial.xml for more documentation.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class IsolationRunner {
   private static final Log LOG = 
     LogFactory.getLog(IsolationRunner.class.getName());
@@ -52,6 +58,13 @@ public class IsolationRunner {
       return TaskUmbilicalProtocol.versionID;
     }
     
+    @Override
+    public ProtocolSignature getProtocolSignature(String protocol,
+        long clientVersion, int clientMethodsHash) throws IOException {
+      return ProtocolSignature.getProtocolSignature(
+          this, protocol, clientVersion, clientMethodsHash);
+    }
+
     public void done(TaskAttemptID taskid) throws IOException {
       LOG.info("Task " + taskid + " reporting done.");
     }
@@ -143,8 +156,9 @@ public class IsolationRunner {
    */
   boolean run(String[] args) 
       throws ClassNotFoundException, IOException, InterruptedException {
-    if (args.length != 1) {
-      System.out.println("Usage: IsolationRunner <path>/job.xml");
+    if (args.length < 1) {
+      System.out.println("Usage: IsolationRunner <path>/job.xml " +
+      		"<optional-user-name>");
       return false;
     }
     File jobFilename = new File(args[0]);
@@ -152,7 +166,14 @@ public class IsolationRunner {
       System.out.println(jobFilename + " is not a valid job file.");
       return false;
     }
+    String user;
+    if (args.length > 1) {
+      user = args[1];
+    } else {
+      user = UserGroupInformation.getCurrentUser().getShortUserName();
+    }
     JobConf conf = new JobConf(new Path(jobFilename.toString()));
+    conf.setUser(user);
     TaskAttemptID taskId = TaskAttemptID.forName(conf.get(JobContext.TASK_ATTEMPT_ID));
     if (taskId == null) {
       System.out.println("mapreduce.task.attempt.id not found in configuration;" + 

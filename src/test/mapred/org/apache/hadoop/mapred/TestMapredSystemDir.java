@@ -17,6 +17,9 @@
  */
 package org.apache.hadoop.mapred;
 
+import java.io.IOException;
+import java.security.PrivilegedExceptionAction;
+
 import junit.framework.TestCase;
 
 import org.apache.commons.logging.Log;
@@ -36,36 +39,44 @@ public class TestMapredSystemDir extends TestCase {
   private static final Log LOG = LogFactory.getLog(TestMapredSystemDir.class);
   
   // dfs ugi
-  private static final UnixUserGroupInformation DFS_UGI = 
+  private static final UserGroupInformation DFS_UGI = 
     TestMiniMRWithDFSWithDistinctUsers.createUGI("dfs", true);
   // mapred ugi
-  private static final UnixUserGroupInformation MR_UGI = 
+  private static final UserGroupInformation MR_UGI = 
     TestMiniMRWithDFSWithDistinctUsers.createUGI("mr", false);
+  private static final FsPermission SYSTEM_DIR_PARENT_PERMISSION =
+    FsPermission.createImmutable((short) 0755); // rwxr-xr-x
   private static final FsPermission SYSTEM_DIR_PERMISSION =
-    FsPermission.createImmutable((short) 0733); // rwx-wx-wx
+    FsPermission.createImmutable((short) 0700); // rwx------
   
   public void testGarbledMapredSystemDir() throws Exception {
-    MiniDFSCluster dfs = null;
+    Configuration conf = new Configuration();
+    final MiniDFSCluster dfs = new MiniDFSCluster(conf, 1, true, null);
     MiniMRCluster mr = null;
     try {
       // start dfs
-      Configuration conf = new Configuration();
-      conf.set("dfs.permissions.supergroup", "supergroup");
-      UnixUserGroupInformation.saveToConf(conf,
-          UnixUserGroupInformation.UGI_PROPERTY_NAME, DFS_UGI);
-      dfs = new MiniDFSCluster(conf, 1, true, null);
-      FileSystem fs = dfs.getFileSystem();
+      conf.set("dfs.permissions.supergroup", "supergroup");      
+      FileSystem fs = DFS_UGI.doAs(new PrivilegedExceptionAction<FileSystem>() {
+        public FileSystem run() throws IOException {
+          return dfs.getFileSystem();
+        }
+      });
       
-      // create Configs.SYSTEM_DIR
-      Path mapredSysDir = new Path("/mapred");
+
+      // create Configs.SYSTEM_DIR's parent with restrictive permissions.
+      // So long as the JT has access to the system dir itself it should
+      // be able to start.
+      Path mapredSysDir = new Path(conf.get(JTConfig.JT_SYSTEM_DIR));
+      Path parentDir =  mapredSysDir.getParent();
+      fs.mkdirs(parentDir);
+      fs.setPermission(parentDir,
+                       new FsPermission(SYSTEM_DIR_PARENT_PERMISSION));
       fs.mkdirs(mapredSysDir);
       fs.setPermission(mapredSysDir, new FsPermission(SYSTEM_DIR_PERMISSION));
       fs.setOwner(mapredSysDir, "mr", "mrgroup");
 
       // start mr (i.e jobtracker)
-      Configuration mrConf = new Configuration();
-      UnixUserGroupInformation.saveToConf(mrConf,
-          UnixUserGroupInformation.UGI_PROPERTY_NAME, MR_UGI);
+      Configuration mrConf = new Configuration(conf);
       mr = new MiniMRCluster(0, 0, 0, dfs.getFileSystem().getUri().toString(),
                              1, null, null, MR_UGI, new JobConf(mrConf));
       JobTracker jobtracker = mr.getJobTrackerRunner().getJobTracker();

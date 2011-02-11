@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.mapreduce.server.tasktracker;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapreduce.MRConfig;
 
 /**
@@ -24,7 +26,8 @@ import org.apache.hadoop.mapreduce.MRConfig;
  * 
  * The keys should have "mapreduce.tasktracker." as the prefix
  */
-
+@InterfaceAudience.Private
+@InterfaceStability.Evolving
 public interface TTConfig extends MRConfig {
 
   // Task-tracker configuration properties
@@ -81,6 +84,19 @@ public interface TTConfig extends MRConfig {
     "mapreduce.tasktracker.taskmemorymanager.monitoringinterval";
   public static final String TT_LOCAL_CACHE_SIZE = 
     "mapreduce.tasktracker.cache.local.size";
+  public static final String TT_LOCAL_CACHE_SUBDIRS_LIMIT =
+    "mapreduce.tasktracker.cache.local.numberdirectories";
   public static final String TT_OUTOFBAND_HEARBEAT =
     "mapreduce.tasktracker.outofband.heartbeat";
+  public static final String TT_RESERVED_PHYSCIALMEMORY_MB =
+    "mapreduce.tasktracker.reserved.physicalmemory.mb";
+  public static final String TT_USER_NAME = "mapreduce.tasktracker.kerberos.principal";
+  public static final String TT_KEYTAB_FILE = 
+    "mapreduce.tasktracker.keytab.file";
+  public static final String TT_GROUP = 
+    "mapreduce.tasktracker.group";
+  public static final String TT_USERLOGCLEANUP_SLEEPTIME = 
+    "mapreduce.tasktracker.userlogcleanup.sleeptime";
+  public static final String TT_DISTRIBUTED_CACHE_CHECK_PERIOD =
+    "mapreduce.tasktracker.distributedcache.checkperiod";
 }

@@ -20,6 +20,8 @@ package org.apache.hadoop.mapreduce.lib.partition;
 
 import java.util.List;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.WritableComparator;
@@ -27,6 +29,7 @@ import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.lib.partition.KeyFieldHelper.KeyDescription;
 
 
@@ -45,7 +48,8 @@ import org.apache.hadoop.mapreduce.lib.partition.KeyFieldHelper.KeyDescription;
  * We assume that the fields in the key are separated by 
  * {@link JobContext#MAP_OUTPUT_KEY_FIELD_SEPERATOR}.
  */
-
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class KeyFieldBasedComparator<K, V> extends WritableComparator 
     implements Configurable {
   private KeyFieldHelper keyFieldHelper = new KeyFieldHelper();
@@ -58,7 +62,7 @@ public class KeyFieldBasedComparator<K, V> extends WritableComparator
   public void setConf(Configuration conf) {
     this.conf = conf;
     String option = conf.get(COMPARATOR_OPTIONS);
-    String keyFieldSeparator = conf.get(JobContext.MAP_OUTPUT_KEY_FIELD_SEPERATOR,"\t");
+    String keyFieldSeparator = conf.get(MRJobConfig.MAP_OUTPUT_KEY_FIELD_SEPERATOR,"\t");
     keyFieldHelper.setKeyFieldSeparator(keyFieldSeparator);
     keyFieldHelper.parseOption(option);
   }

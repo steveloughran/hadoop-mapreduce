@@ -18,7 +18,8 @@
 
 package org.apache.hadoop.util;
 
-import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 
 /**
  * Plugin to calculate virtual and physical memories on the system.
@@ -29,12 +30,8 @@ import org.apache.hadoop.conf.Configuration;
  * 
  */
 @Deprecated
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public abstract class MemoryCalculatorPlugin extends
     org.apache.hadoop.mapreduce.util.MemoryCalculatorPlugin {
-
-  public static MemoryCalculatorPlugin getMemoryCalculatorPlugin(
-      Class<? extends MemoryCalculatorPlugin> clazz, Configuration conf) {
-    return (MemoryCalculatorPlugin) org.apache.hadoop.mapreduce.util.MemoryCalculatorPlugin
-        .getMemoryCalculatorPlugin(clazz, conf);
-  }
 }

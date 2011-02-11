@@ -23,6 +23,7 @@ import java.io.DataOutput;
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.text.NumberFormat;
 import java.util.ArrayList;
@@ -43,7 +44,10 @@ import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableComparable;
+import org.apache.hadoop.mapred.TaskLog;
 import org.apache.hadoop.mapred.Utils;
+import org.apache.hadoop.mapred.TaskLog.LogName;
+import org.apache.hadoop.mapred.TaskLog.Reader;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.Reducer;
@@ -133,8 +137,8 @@ public class MapReduceTestUtil {
    */
   public static Job createCopyJob(Configuration conf, Path outdir, 
       Path... indirs) throws Exception {
-    conf.setInt(JobContext.NUM_MAPS, 3);
-    Job theJob = new Job(conf);
+    conf.setInt(MRJobConfig.NUM_MAPS, 3);
+    Job theJob = Job.getInstance(conf);
     theJob.setJobName("DataMoveJob");
 
     FileInputFormat.setInputPaths(theJob, indirs);
@@ -158,9 +162,12 @@ public class MapReduceTestUtil {
    */
   public static Job createFailJob(Configuration conf, Path outdir, 
       Path... indirs) throws Exception {
-
-    conf.setInt(JobContext.MAP_MAX_ATTEMPTS, 2);
-    Job theJob = new Job(conf);
+    FileSystem fs = outdir.getFileSystem(conf);
+    if (fs.exists(outdir)) {
+      fs.delete(outdir, true);
+    }
+    conf.setInt(MRJobConfig.MAP_MAX_ATTEMPTS, 2);
+    Job theJob = Job.getInstance(conf);
     theJob.setJobName("Fail-Job");
 
     FileInputFormat.setInputPaths(theJob, indirs);
@@ -185,7 +192,7 @@ public class MapReduceTestUtil {
   public static Job createKillJob(Configuration conf, Path outdir, 
       Path... indirs) throws Exception {
 
-    Job theJob = new Job(conf);
+    Job theJob = Job.getInstance(conf);
     theJob.setJobName("Kill-Job");
 
     FileInputFormat.setInputPaths(theJob, indirs);
@@ -347,7 +354,7 @@ public class MapReduceTestUtil {
 
   public static Job createJob(Configuration conf, Path inDir, Path outDir, 
       int numInputFiles, int numReds, String input) throws IOException {
-    Job job = new Job(conf);
+    Job job = Job.getInstance(conf);
     FileSystem fs = FileSystem.get(conf);
     if (fs.exists(outDir)) {
       fs.delete(outDir, true);
@@ -371,7 +378,7 @@ public class MapReduceTestUtil {
   public static TaskAttemptContext createDummyMapTaskAttemptContext(
       Configuration conf) {
     TaskAttemptID tid = new TaskAttemptID("jt", 1, TaskType.MAP, 0, 0);
-    conf.set(JobContext.TASK_ATTEMPT_ID, tid.toString());
+    conf.set(MRJobConfig.TASK_ATTEMPT_ID, tid.toString());
     return new TaskAttemptContextImpl(conf, tid);    
   }
 
@@ -389,7 +396,8 @@ public class MapReduceTestUtil {
       }
     };
   }
-  
+
+  // Return output of MR job by reading from the given output directory
   public static String readOutput(Path outDir, Configuration conf) 
       throws IOException {
     FileSystem fs = outDir.getFileSystem(conf);
@@ -410,6 +418,46 @@ public class MapReduceTestUtil {
       file.close();
     }
     return result.toString();
+  }
+
+  /**
+   * Reads tasklog and returns it as string after trimming it.
+   * 
+   * @param filter
+   *          Task log filter; can be STDOUT, STDERR, SYSLOG, DEBUGOUT, PROFILE
+   * @param taskId
+   *          The task id for which the log has to collected
+   * @param isCleanup
+   *          whether the task is a cleanup attempt or not.
+   * @return task log as string
+   * @throws IOException
+   */
+  public static String readTaskLog(TaskLog.LogName filter,
+      org.apache.hadoop.mapred.TaskAttemptID taskId, boolean isCleanup)
+      throws IOException {
+    // string buffer to store task log
+    StringBuffer result = new StringBuffer();
+    int res;
+
+    // reads the whole tasklog into inputstream
+    InputStream taskLogReader = new TaskLog.Reader(taskId, filter, 0, -1,
+        isCleanup);
+    // construct string log from inputstream.
+    byte[] b = new byte[65536];
+    while (true) {
+      res = taskLogReader.read(b);
+      if (res > 0) {
+        result.append(new String(b));
+      } else {
+        break;
+      }
+    }
+    taskLogReader.close();
+
+    // trim the string and return it
+    String str = result.toString();
+    str = str.trim();
+    return str;
   }
 
 }

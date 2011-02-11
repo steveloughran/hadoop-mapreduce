@@ -18,6 +18,7 @@
 package org.apache.hadoop.tools.rumen;
 
 import java.util.Set;
+import java.util.Random;
 
 /**
  * {@link ClusterStory} represents all configurations of a MapReduce cluster,
@@ -45,20 +46,21 @@ public interface ClusterStory {
   /**
    * Select a random set of machines.
    * @param expected The expected sample size.
+   * @param random Random number generator to use.
    * @return An array of up to expected number of {@link MachineNode}s.
    */
-  public MachineNode[] getRandomMachines(int expected);
+  public MachineNode[] getRandomMachines(int expected, Random random);
 
   /**
    * Get {@link MachineNode} by its host name.
    * 
-   * @return The {@line MachineNode} with the same name. Or null if not found.
+   * @return The {@link MachineNode} with the same name. Or null if not found.
    */
   public MachineNode getMachineByName(String name);
   
   /**
    * Get {@link RackNode} by its name.
-   * @return The {@line RackNode} with the same name. Or null if not found.
+   * @return The {@link RackNode} with the same name. Or null if not found.
    */
   public RackNode getRackByName(String name);
 

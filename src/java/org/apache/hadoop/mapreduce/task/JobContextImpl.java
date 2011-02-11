@@ -21,6 +21,8 @@ package org.apache.hadoop.mapreduce.task;
 import java.io.IOException;
 import java.net.URI;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.Path;
@@ -37,19 +39,34 @@ import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
 import org.apache.hadoop.mapreduce.lib.partition.HashPartitioner;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 
 /**
  * A read-only view of the job that is provided to the tasks while they
  * are running.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class JobContextImpl implements JobContext {
 
   protected final org.apache.hadoop.mapred.JobConf conf;
-  private final JobID jobId;
+  private JobID jobId;
+  /**
+   * The UserGroupInformation object that has a reference to the current user
+   */
+  protected UserGroupInformation ugi;
+  protected final Credentials credentials;
   
   public JobContextImpl(Configuration conf, JobID jobId) {
     this.conf = new org.apache.hadoop.mapred.JobConf(conf);
     this.jobId = jobId;
+    this.credentials = this.conf.getCredentials();
+    try {
+      this.ugi = UserGroupInformation.getCurrentUser();
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   /**
@@ -66,6 +83,13 @@ public class JobContextImpl implements JobContext {
    */
   public JobID getJobID() {
     return jobId;
+  }
+  
+  /**
+   * Set the JobID.
+   */
+  public void setJobID(JobID jobId) {
+    this.jobId = jobId;
   }
   
   /**
@@ -382,6 +406,10 @@ public class JobContextImpl implements JobContext {
    */
   public String getUser() {
     return conf.getUser();
+  }
+
+  public Credentials getCredentials() {
+    return credentials;
   }
   
 }

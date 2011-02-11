@@ -19,20 +19,21 @@ package org.apache.hadoop.mapred;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.*;
 import org.apache.hadoop.mapred.TaskStatus.State;
 
 import java.io.*;
 import java.util.*;
 
-/**************************************************
- * A TaskTrackerStatus is a MapReduce primitive.  Keeps
- * info on a TaskTracker.  The JobTracker maintains a set
- * of the most recent TaskTrackerStatus objects for each
- * unique TaskTracker it knows about.
- *
- * This is NOT a public interface!
- **************************************************/
+/**
+ * A TaskTrackerStatus is a MapReduce primitive.  Keeps info on a TaskTracker.
+ * The JobTracker maintains a set of the most recent TaskTrackerStatus objects
+ * for each unique TaskTracker it knows about.
+ */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class TaskTrackerStatus implements Writable {
   public static final Log LOG = LogFactory.getLog(TaskTrackerStatus.class);
   
@@ -426,8 +427,7 @@ public class TaskTrackerStatus implements Writable {
    */
   public int countMapTasks() {
     int mapCount = 0;
-    for (Iterator<TaskStatus> it = taskReports.iterator(); it.hasNext();) {
-      TaskStatus ts = it.next();
+    for (TaskStatus ts : taskReports) {
       if (ts.getIsMap() && isTaskRunning(ts)) {
         mapCount++;
       }
@@ -441,8 +441,7 @@ public class TaskTrackerStatus implements Writable {
    */
   public int countOccupiedMapSlots() {
     int mapSlotsCount = 0;
-    for (Iterator<TaskStatus> it = taskReports.iterator(); it.hasNext();) {
-      TaskStatus ts = it.next();
+    for (TaskStatus ts : taskReports) {
       if (ts.getIsMap() && isTaskRunning(ts)) {
         mapSlotsCount += ts.getNumSlots();
       }
@@ -464,8 +463,7 @@ public class TaskTrackerStatus implements Writable {
    */
   public int countReduceTasks() {
     int reduceCount = 0;
-    for (Iterator<TaskStatus> it = taskReports.iterator(); it.hasNext();) {
-      TaskStatus ts = it.next();
+    for (TaskStatus ts : taskReports) {
       if ((!ts.getIsMap()) && isTaskRunning(ts)) {
         reduceCount++;
       }
@@ -479,8 +477,7 @@ public class TaskTrackerStatus implements Writable {
    */
   public int countOccupiedReduceSlots() {
     int reduceSlotsCount = 0;
-    for (Iterator<TaskStatus> it = taskReports.iterator(); it.hasNext();) {
-      TaskStatus ts = it.next();
+    for (TaskStatus ts : taskReports) {
       if ((!ts.getIsMap()) && isTaskRunning(ts)) {
         reduceSlotsCount += ts.getNumSlots();
       }

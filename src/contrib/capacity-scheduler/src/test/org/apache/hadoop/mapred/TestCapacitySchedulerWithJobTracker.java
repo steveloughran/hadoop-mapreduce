@@ -21,7 +21,7 @@ package org.apache.hadoop.mapred;
 import java.util.Properties;
 
 import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
 import org.apache.hadoop.mapreduce.SleepJob;
@@ -43,6 +43,7 @@ public class TestCapacitySchedulerWithJobTracker extends
     clusterProps.put(TTConfig.TT_MAP_SLOTS, String.valueOf(1));
     clusterProps.put(TTConfig.TT_REDUCE_SLOTS, String.valueOf(1));
     clusterProps.put(JTConfig.JT_TASKS_PER_JOB, String.valueOf(1));
+    clusterProps.put(JTConfig.JT_PERSIST_JOBSTATUS, "false");
     // cluster capacity 1 maps, 1 reduces
     startCluster(1, clusterProps, schedulerProps);
     CapacityTaskScheduler scheduler = (CapacityTaskScheduler) getJobTracker()
@@ -87,6 +88,7 @@ public class TestCapacitySchedulerWithJobTracker extends
     clusterProps.put(TTConfig.TT_MAP_SLOTS, String.valueOf(2));
     clusterProps.put(TTConfig.TT_REDUCE_SLOTS, String.valueOf(2));
     clusterProps.put("mapred.queue.names", queues[0] + "," + queues[1]);
+    clusterProps.put(JTConfig.JT_PERSIST_JOBSTATUS, "false");
     startCluster(2, clusterProps, schedulerProps);
     CapacityTaskScheduler scheduler = (CapacityTaskScheduler) getJobTracker()
       .getTaskScheduler();
@@ -107,7 +109,7 @@ public class TestCapacitySchedulerWithJobTracker extends
 
     JobConf conf = getJobConf();
     conf.setSpeculativeExecution(false);
-    conf.set(JobContext.SETUP_CLEANUP_NEEDED, "false");
+    conf.set(MRJobConfig.SETUP_CLEANUP_NEEDED, "false");
     conf.setNumTasksToExecutePerJvm(-1);
     conf.setQueueName(queues[0]);
     SleepJob sleepJob1 = new SleepJob();
@@ -122,6 +124,7 @@ public class TestCapacitySchedulerWithJobTracker extends
     SleepJob sleepJob2 = new SleepJob();
     sleepJob2.setConf(conf2);
     jobs[1] = sleepJob2.createJob(3, 3, 5, 3, 5, 3);
+    jobs[0].waitForCompletion(false);
     jobs[1].waitForCompletion(false);
     assertTrue(
       "Sleep job submitted to queue 1 is not successful", jobs[0]
