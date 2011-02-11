@@ -20,6 +20,8 @@ package org.apache.hadoop.mapreduce.jobhistory;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapreduce.Counters;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
@@ -31,6 +33,8 @@ import org.apache.avro.util.Utf8;
  * Event to record successful task completion
  *
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class TaskAttemptFinishedEvent  implements HistoryEvent {
   private TaskAttemptFinished datum = new TaskAttemptFinished();
 
@@ -88,7 +92,11 @@ public class TaskAttemptFinishedEvent  implements HistoryEvent {
   Counters getCounters() { return EventReader.fromAvro(datum.counters); }
   /** Get the event type */
   public EventType getEventType() {
-    return EventType.MAP_ATTEMPT_FINISHED;
+    // Note that the task type can be setup/map/reduce/cleanup but the 
+    // attempt-type can only be map/reduce.
+    return getTaskId().getTaskType() == TaskType.MAP 
+           ? EventType.MAP_ATTEMPT_FINISHED
+           : EventType.REDUCE_ATTEMPT_FINISHED;
   }
 
 }

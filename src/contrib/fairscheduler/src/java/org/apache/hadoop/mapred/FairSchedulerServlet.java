@@ -30,6 +30,7 @@ import java.util.Collection;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Date;
+import java.util.Iterator;
 import java.util.List;
 
 import javax.servlet.ServletContext;
@@ -81,9 +82,9 @@ public class FairSchedulerServlet extends HttpServlet {
     // If the request has a set* param, handle that and redirect to the regular
     // view page so that the user won't resubmit the data if they hit refresh.
     boolean advancedView = request.getParameter("advanced") != null;
-    if (JSPUtil.privateActionsAllowed()
+    if (JSPUtil.privateActionsAllowed(jobTracker.conf)
         && request.getParameter("setPool") != null) {
-      Collection<JobInProgress> runningJobs = jobTracker.getRunningJobs();
+      Collection<JobInProgress> runningJobs = getInitedJobs();
       PoolManager poolMgr = null;
       synchronized (scheduler) {
         poolMgr = scheduler.getPoolManager();
@@ -102,9 +103,9 @@ public class FairSchedulerServlet extends HttpServlet {
       response.sendRedirect("/scheduler" + (advancedView ? "?advanced" : ""));
       return;
     }
-    if (JSPUtil.privateActionsAllowed()
+    if (JSPUtil.privateActionsAllowed(jobTracker.conf)
         && request.getParameter("setPriority") != null) {
-      Collection<JobInProgress> runningJobs = jobTracker.getRunningJobs();      
+      Collection<JobInProgress> runningJobs = getInitedJobs();
       JobPriority priority = JobPriority.valueOf(request.getParameter(
           "setPriority"));
       String jobId = request.getParameter("jobid");
@@ -246,7 +247,7 @@ public class FairSchedulerServlet extends HttpServlet {
         (advancedView ? "<th>Weight</th>" : ""));
     out.print("</tr>\n");
     synchronized (jobTracker) {
-      Collection<JobInProgress> runningJobs = jobTracker.getRunningJobs();
+      Collection<JobInProgress> runningJobs = getInitedJobs();
       synchronized (scheduler) {
         for (JobInProgress job: runningJobs) {
           JobProfile profile = job.getProfile();
@@ -261,7 +262,7 @@ public class FairSchedulerServlet extends HttpServlet {
               profile.getJobID(), profile.getJobID());
           out.printf("<td>%s</td>\n", profile.getUser());
           out.printf("<td>%s</td>\n", profile.getJobName());
-          if (JSPUtil.privateActionsAllowed()) {
+          if (JSPUtil.privateActionsAllowed(jobTracker.conf)) {
             out.printf("<td>%s</td>\n", generateSelect(scheduler
                 .getPoolManager().getPoolNames(), scheduler.getPoolManager()
                 .getPoolName(job), "/scheduler?setPool=<CHOICE>&jobid="
@@ -323,4 +324,19 @@ public class FairSchedulerServlet extends HttpServlet {
     html.append("</select>\n");
     return html.toString();
   }
+
+  /**
+   * Obtained all initialized jobs
+   */
+  private Collection<JobInProgress> getInitedJobs() {
+    Collection<JobInProgress> runningJobs = jobTracker.getRunningJobs();
+    for (Iterator<JobInProgress> it = runningJobs.iterator(); it.hasNext();) {
+      JobInProgress job = it.next();
+      if (!job.inited()) {
+        it.remove();
+      }
+    }
+    return runningJobs;
+  }
+
 }

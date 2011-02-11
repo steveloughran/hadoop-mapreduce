@@ -19,8 +19,9 @@
 package org.apache.hadoop.mapred;
 
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueState;
-import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.authorize.AccessControlList;
 import static org.apache.hadoop.mapred.QueueManager.*;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -46,7 +47,7 @@ class DeprecatedQueueConfigurationParser extends QueueConfigurationParser {
       return;
     }
     List<Queue> listq = createQueues(conf);
-    this.setAclsEnabled(conf.getBoolean("mapred.acls.enabled", false));
+    this.setAclsEnabled(conf.getBoolean(MRConfig.MR_ACLS_ENABLED, false));
     root = new Queue();
     root.setName("");
     for (Queue q : listq) {
@@ -60,7 +61,7 @@ class DeprecatedQueueConfigurationParser extends QueueConfigurationParser {
     List<Queue> list = new ArrayList<Queue>();
     for (String name : queueNameValues) {
       try {
-        Map<String, SecurityUtil.AccessControlList> acls = getQueueAcls(
+        Map<String, AccessControlList> acls = getQueueAcls(
           name, conf);
         QueueState state = getQueueState(name, conf);
         Queue q = new Queue(name, acls, state);
@@ -78,9 +79,8 @@ class DeprecatedQueueConfigurationParser extends QueueConfigurationParser {
    */
   private QueueState getQueueState(String name, Configuration conf) {
     String stateVal = conf.get(
-      QueueManager.toFullPropertyName(
-        name,"state"),
-      QueueState.RUNNING.getStateName());
+        toFullPropertyName(name, "state"),
+        QueueState.RUNNING.getStateName());
     return QueueState.getState(stateVal);
   }
 
@@ -95,30 +95,21 @@ class DeprecatedQueueConfigurationParser extends QueueConfigurationParser {
       return false;
     } else {
       LOG.warn(
-        "Configuring \"mapred.queue.names\" in mapred-site.xml or " +
-          "hadoop-site.xml is deprecated. Configure " +
-          "queue hierarchy  in " +
-          QUEUE_CONF_FILE_NAME);
+          "Configuring \"" + MAPRED_QUEUE_NAMES_KEY
+          + "\" in mapred-site.xml or "
+          + "hadoop-site.xml is deprecated and will overshadow "
+          + QUEUE_CONF_FILE_NAME + ". Remove this property and configure "
+          + "queue hierarchy in " + QUEUE_CONF_FILE_NAME);
       // store queues so we can check if ACLs are also configured
       // in the deprecated files.
       queues = conf.getStrings(MAPRED_QUEUE_NAMES_KEY);
     }
 
-    // check if the acls flag is defined
-    String aclsEnable = conf.get("mapred.acls.enabled");
-    if (aclsEnable != null) {
-      LOG.warn(
-        "Configuring \"mapred.acls.enabled\" in mapred-site.xml or " +
-          "hadoop-site.xml is deprecated. Configure " +
-          "queue hierarchy in " +
-          QUEUE_CONF_FILE_NAME);
-    }
-
     // check if acls are defined
     if (queues != null) {
       for (String queue : queues) {
-        for (Queue.QueueOperation oper : Queue.QueueOperation.values()) {
-          String key = toFullPropertyName(queue, oper.getAclName());
+        for (QueueACL qAcl : QueueACL.values()) {
+          String key = toFullPropertyName(queue, qAcl.getAclName());
           String aclString = conf.get(key);
           if (aclString != null) {
             LOG.warn(
@@ -143,15 +134,15 @@ class DeprecatedQueueConfigurationParser extends QueueConfigurationParser {
   /**
    * Parse ACLs for the queue from the configuration.
    */
-  private Map<String, SecurityUtil.AccessControlList> getQueueAcls(
+  private Map<String, AccessControlList> getQueueAcls(
     String name,
     Configuration conf) {
-    HashMap<String, SecurityUtil.AccessControlList> map =
-      new HashMap<String, SecurityUtil.AccessControlList>();
-    for (Queue.QueueOperation oper : Queue.QueueOperation.values()) {
-      String aclKey = toFullPropertyName(name, oper.getAclName());
+    HashMap<String, AccessControlList> map =
+      new HashMap<String, AccessControlList>();
+    for (QueueACL qAcl : QueueACL.values()) {
+      String aclKey = toFullPropertyName(name, qAcl.getAclName());
       map.put(
-        aclKey, new SecurityUtil.AccessControlList(
+        aclKey, new AccessControlList(
           conf.get(
             aclKey, "*")));
     }

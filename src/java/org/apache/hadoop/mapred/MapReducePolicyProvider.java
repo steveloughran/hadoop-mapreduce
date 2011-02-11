@@ -17,8 +17,10 @@
  */
 package org.apache.hadoop.mapred;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
-import org.apache.hadoop.security.RefreshUserToGroupMappingsProtocol;
+import org.apache.hadoop.security.RefreshUserMappingsProtocol;
 import org.apache.hadoop.security.authorize.PolicyProvider;
 import org.apache.hadoop.security.authorize.RefreshAuthorizationPolicyProtocol;
 import org.apache.hadoop.security.authorize.Service;
@@ -26,6 +28,8 @@ import org.apache.hadoop.security.authorize.Service;
 /**
  * {@link PolicyProvider} for Map-Reduce protocols.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class MapReducePolicyProvider extends PolicyProvider {
   private static final Service[] mapReduceServices = 
     new Service[] {
@@ -37,8 +41,10 @@ public class MapReducePolicyProvider extends PolicyProvider {
                   TaskUmbilicalProtocol.class),
       new Service("security.refresh.policy.protocol.acl", 
                   RefreshAuthorizationPolicyProtocol.class),
-      new Service("security.refresh.usertogroups.mappings.protocol.acl", 
-                  RefreshUserToGroupMappingsProtocol.class),
+      new Service("security.refresh.user.mappings.protocol.acl", 
+                  RefreshUserMappingsProtocol.class),
+      new Service("security.admin.operations.protocol.acl", 
+                  AdminOperationsProtocol.class),
   };
   
   @Override

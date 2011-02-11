@@ -23,7 +23,7 @@ import static org.junit.Assert.*;
 import java.io.*;
 
 import org.apache.hadoop.fs.FileUtil;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 /**
  * This class tests hadoopStreaming in MapReduce local mode.
@@ -36,7 +36,7 @@ public class TestStreamAggregate
   protected File OUTPUT_DIR = new File("stream_aggregate_out");
   protected String input = "roses are red\nviolets are blue\nbunnies are pink\n";
   // map parses input lines and generates count entries for each word.
-  protected String map = StreamUtil.makeJavaCommand(StreamAggregate.class, new String[]{".", "\\n"});
+  protected String map = UtilTest.makeJavaCommand(StreamAggregate.class, new String[]{".", "\\n"});
   // Use the aggregate combine, reducei to aggregate the counts
   protected String outputExpect = "are\t3\nblue\t1\nbunnies\t1\npink\t1\nred\t1\nroses\t1\nviolets\t1\n";
 
@@ -63,9 +63,7 @@ public class TestStreamAggregate
       "-output", OUTPUT_DIR.getAbsolutePath(),
       "-mapper", map,
       "-reducer", "aggregate",
-      //"-verbose",
-      //"-jobconf", "stream.debug=set"
-      "-jobconf", JobContext.PRESERVE_FAILED_TASK_FILES + "=true",
+      "-jobconf", MRJobConfig.PRESERVE_FAILED_TASK_FILES + "=true",
       "-jobconf", "stream.tmpdir="+System.getProperty("test.build.data","/tmp")
     };
   }

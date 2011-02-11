@@ -27,8 +27,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import javax.security.auth.login.LoginException;
-
 import junit.framework.TestCase;
 
 import org.apache.commons.logging.Log;
@@ -43,9 +41,10 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.TaskType;
-import org.apache.hadoop.security.UnixUserGroupInformation;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 
 /**
@@ -99,32 +98,7 @@ public class TestMiniMRWithDFS extends TestCase {
     conf.setNumMapTasks(numMaps);
     conf.setNumReduceTasks(numReduces);
     RunningJob job = JobClient.runJob(conf);
-    return new TestResult(job, readOutput(outDir, conf));
-  }
-
-  public static String readOutput(Path outDir, 
-                                  JobConf conf) throws IOException {
-    FileSystem fs = outDir.getFileSystem(conf);
-    StringBuffer result = new StringBuffer();
-    {
-      
-      Path[] fileList = FileUtil.stat2Paths(fs.listStatus(outDir,
-                                   new Utils.OutputFileUtils
-                                            .OutputFilesFilter()));
-      for(int i=0; i < fileList.length; ++i) {
-        LOG.info("File list[" + i + "]" + ": "+ fileList[i]);
-        BufferedReader file = 
-          new BufferedReader(new InputStreamReader(fs.open(fileList[i])));
-        String line = file.readLine();
-        while (line != null) {
-          result.append(line);
-          result.append("\n");
-          line = file.readLine();
-        }
-        file.close();
-      }
-    }
-    return result.toString();
+    return new TestResult(job, MapReduceTestUtil.readOutput(outDir, conf));
   }
 
   /**
@@ -238,15 +212,7 @@ public class TestMiniMRWithDFS extends TestCase {
         NUM_MAPS, NUM_SAMPLES, jobconf).doubleValue();
     double error = Math.abs(Math.PI - estimate);
     assertTrue("Error in PI estimation "+error+" exceeds 0.01", (error < 0.01));
-    String userName = jobconf.getUser();
-    if (userName == null) {
-      try {
-        userName = UnixUserGroupInformation.login(jobconf).getUserName();
-      } catch (LoginException le) {
-        throw new IOException("Cannot get the login username : "
-            + StringUtils.stringifyException(le));
-      }
-    }
+    String userName = UserGroupInformation.getLoginUser().getUserName();
     checkTaskDirectories(mr, userName, new String[] {}, new String[] {});
   }
 
@@ -268,15 +234,8 @@ public class TestMiniMRWithDFS extends TestCase {
     JobID jobid = result.job.getID();
     TaskAttemptID taskid = new TaskAttemptID(
         new TaskID(jobid, TaskType.MAP, 1),0);
-    String userName = jobConf.getUser();
-    if (userName == null) {
-      try {
-        userName = UnixUserGroupInformation.login(jobConf).getUserName();
-      } catch (LoginException le) {
-        throw new IOException("Cannot get the login username : "
-            + StringUtils.stringifyException(le));
-      }
-    }
+    String userName = UserGroupInformation.getLoginUser().getUserName();
+    
     checkTaskDirectories(mr, userName, new String[] { jobid.toString() },
         new String[] { taskid.toString() });
     // test with maps=0

@@ -26,6 +26,7 @@ import java.io.Writer;
 import java.net.BindException;
 import java.net.InetSocketAddress;
 import java.net.UnknownHostException;
+import java.security.PrivilegedExceptionAction;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
@@ -48,12 +49,16 @@ import java.util.TreeSet;
 import java.util.Vector;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import javax.security.auth.login.LoginException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FSDataOutputStream;
 import org.apache.hadoop.fs.FileStatus;
@@ -63,22 +68,27 @@ import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.http.HttpServer;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.Server;
 import org.apache.hadoop.ipc.RPC.VersionMismatch;
+import org.apache.hadoop.mapred.AuditLogger.Constants;
 import org.apache.hadoop.mapred.ClusterStatus.BlackListInfo;
 import org.apache.hadoop.mapred.JobInProgress.KillInterruptedException;
 import org.apache.hadoop.mapred.JobStatusChangeEvent.EventType;
 import org.apache.hadoop.mapred.JobTrackerStatistics.TaskTrackerStat;
 import org.apache.hadoop.mapred.TaskTrackerStatus.TaskTrackerHealthStatus;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueInfo;
 import org.apache.hadoop.mapreduce.TaskTrackerInfo;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistory;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
-import org.apache.hadoop.mapreduce.security.TokenStorage;
+import org.apache.hadoop.mapreduce.security.token.DelegationTokenRenewal;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenSecretManager;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.TaskTracker;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
@@ -90,16 +100,18 @@ import org.apache.hadoop.net.Node;
 import org.apache.hadoop.net.NodeBase;
 import org.apache.hadoop.net.ScriptBasedMapping;
 import org.apache.hadoop.security.AccessControlException;
-import org.apache.hadoop.security.PermissionChecker;
-import org.apache.hadoop.security.RefreshUserToGroupMappingsProtocol;
+import org.apache.hadoop.security.Groups;
+import org.apache.hadoop.security.RefreshUserMappingsProtocol;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.SecurityUtil;
-import org.apache.hadoop.security.UnixUserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.UserGroupInformation.AuthenticationMethod;
+import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.authorize.AuthorizationException;
-import org.apache.hadoop.security.authorize.ConfiguredPolicy;
-import org.apache.hadoop.security.authorize.PolicyProvider;
+import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.apache.hadoop.security.authorize.RefreshAuthorizationPolicyProtocol;
 import org.apache.hadoop.security.authorize.ServiceAuthorizationManager;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.HostsFileReader;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
@@ -110,8 +122,10 @@ import org.apache.hadoop.util.VersionInfo;
  * tracking MR jobs in a network environment.
  *
  *******************************************************/
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class JobTracker implements MRConstants, InterTrackerProtocol,
-    ClientProtocol, TaskTrackerManager, RefreshUserToGroupMappingsProtocol,
+    ClientProtocol, TaskTrackerManager, RefreshUserMappingsProtocol,
     RefreshAuthorizationPolicyProtocol, AdminOperationsProtocol, JTConfig {
 
   static{
@@ -119,6 +133,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
 
   private final long tasktrackerExpiryInterval;
+  private final long DELEGATION_TOKEN_GC_INTERVAL = 3600000; // 1 hour
+  private final DelegationTokenSecretManager secretManager;
   
   // The interval after which one fault of a tracker will be discarded,
   // if there are no faults during this. 
@@ -144,7 +160,12 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   private float HEARTBEATS_SCALING_FACTOR;
   private final float MIN_HEARTBEATS_SCALING_FACTOR = 0.01f;
   private final float DEFAULT_HEARTBEATS_SCALING_FACTOR = 1.0f;
+
+  // Minimum interval for heartbeats regardless of cluster size.
+  private int HEARTBEAT_INTERVAL_MIN;
   
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   public static enum State { INITIALIZING, RUNNING }
   State state = State.INITIALIZING;
   private static final int FS_ACCESS_RETRY_PERIOD = 10000;
@@ -154,7 +175,15 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   private DNSToSwitchMapping dnsToSwitchMapping;
   NetworkTopology clusterMap = new NetworkTopology();
   private int numTaskCacheLevels; // the max level to which we cache tasks
-  private Set<Node> nodesAtMaxLevel = new HashSet<Node>();
+  /**
+   * {@link #nodesAtMaxLevel} is using the keySet from {@link ConcurrentHashMap}
+   * so that it can be safely written to and iterated on via 2 separate threads.
+   * Note: It can only be iterated from a single thread which is feasible since
+   *       the only iteration is done in {@link JobInProgress} under the 
+   *       {@link JobTracker} lock.
+   */
+  private Set<Node> nodesAtMaxLevel = 
+    Collections.newSetFromMap(new ConcurrentHashMap<Node, Boolean>());
   final TaskScheduler taskScheduler;
   private final List<JobInProgressListener> jobInProgressListeners =
     new CopyOnWriteArrayList<JobInProgressListener>();
@@ -182,11 +211,20 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
 
   private MRAsyncDiskService asyncDiskService;
   
-  private final String defaultStagingBaseDir;
+  /**
+   * Returns the delegation token secret manager instance in JobTracker.
+   * 
+   * @return DelegationTokenSecretManager object
+   */
+  public DelegationTokenSecretManager getDelegationTokenSecretManager() {
+    return secretManager;
+  }
   
   /**
    * A client tried to submit a job before the Job Tracker was ready.
    */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   public static class IllegalStateException extends IOException {
  
     private static final long serialVersionUID = 1L;
@@ -196,7 +234,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     }
   }
 
-  private int nextJobId = 1;
+  private final AtomicInteger nextJobId = new AtomicInteger(1);
 
   public static final Log LOG = LogFactory.getLog(JobTracker.class);
     
@@ -225,17 +263,17 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @throws IOException
    */
   public static JobTracker startTracker(JobConf conf) 
-  throws IOException, InterruptedException, LoginException {
+  throws IOException, InterruptedException {
     return startTracker(conf, DEFAULT_CLOCK);
   }
 
   static JobTracker startTracker(JobConf conf, Clock clock) 
-  throws IOException, InterruptedException, LoginException {
+  throws IOException, InterruptedException {
     return startTracker(conf, clock, generateNewIdentifier());
   }
 
   static JobTracker startTracker(JobConf conf, Clock clock, String identifier) 
-  throws IOException, InterruptedException, LoginException {
+  throws IOException, InterruptedException {
     JobTracker result = null;
     while (true) {
       try {
@@ -279,13 +317,20 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       return RefreshAuthorizationPolicyProtocol.versionID;
     } else if (protocol.equals(AdminOperationsProtocol.class.getName())){
       return AdminOperationsProtocol.versionID;
-    } else if (protocol.equals(RefreshUserToGroupMappingsProtocol.class.getName())){
-      return RefreshUserToGroupMappingsProtocol.versionID;
+    } else if (protocol.equals(RefreshUserMappingsProtocol.class.getName())){
+      return RefreshUserMappingsProtocol.versionID;
     } else {
       throw new IOException("Unknown protocol to job tracker: " + protocol);
     }
   }
   
+  @Override
+  public ProtocolSignature getProtocolSignature(String protocol,
+      long clientVersion, int clientMethodsHash) throws IOException {
+    return ProtocolSignature.getProtocolSignature(
+        this, protocol, clientVersion, clientMethodsHash);
+  }
+
   /**
    * A thread to timeout tasks that have been assigned to task trackers,
    * but that haven't reported back yet.
@@ -307,7 +352,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
           // Every 3 minutes check for any tasks that are overdue
           Thread.sleep(tasktrackerExpiryInterval/3);
           long now = clock.getTime();
-          LOG.debug("Starting launching task sweep");
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Starting launching task sweep");
+          }
           synchronized (JobTracker.this) {
             synchronized (launchingTasks) {
               Iterator<Map.Entry<TaskAttemptID, Long>> itr =
@@ -679,7 +726,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     private void blackListTracker(String hostName, String reason, ReasonForBlackListing rfb) {
       FaultInfo fi = getFaultInfo(hostName, true);
       boolean blackListed = fi.isBlacklisted();
-      if(blackListed) {
+      if (blackListed) {
         if (LOG.isDebugEnabled()) {
           LOG.debug("Adding blacklisted reason for tracker : " + hostName 
               + " Reason for blacklisting is : " + rfb);
@@ -707,7 +754,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     private boolean canUnBlackListTracker(String hostName,
         ReasonForBlackListing rfb) {
       FaultInfo fi = getFaultInfo(hostName, false);
-      if(fi == null) {
+      if (fi == null) {
         return false;
       }
       
@@ -719,15 +766,15 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         ReasonForBlackListing rfb) {
       // check if you can black list the tracker then call this methods
       FaultInfo fi = getFaultInfo(hostName, false);
-      if(fi.removeBlackListedReason(rfb)) {
-        if(fi.getReasonforblacklisting().isEmpty()) {
+      if (fi.removeBlackListedReason(rfb)) {
+        if (fi.getReasonforblacklisting().isEmpty()) {
           addHostCapacity(hostName);
           LOG.info("Unblacklisting tracker : " + hostName);
           fi.unBlacklist();
           //We have unBlackListed tracker, so tracker should
           //definitely be healthy. Check fault count if fault count
           //is zero don't keep it memory.
-          if(fi.numFaults == 0) {
+          if (fi.numFaults == 0) {
             potentiallyFaultyTrackers.remove(hostName);
           }
         }
@@ -1047,7 +1094,6 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     void updateRestartCount() throws IOException {
       Path restartFile = getRestartCountFile();
       Path tmpRestartFile = getTempRestartCountFile();
-      FileSystem fs = restartFile.getFileSystem(conf);
       FsPermission filePerm = new FsPermission(SYSTEM_FILE_PERMISSION);
 
       // read the count from the jobtracker info file
@@ -1132,9 +1178,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
           JobInfo token = new JobInfo();
           token.readFields(in);
           in.close();
-          UnixUserGroupInformation ugi = new UnixUserGroupInformation(
-              token.getUser().toString(), 
-              new String[]{UnixUserGroupInformation.DEFAULT_GROUP});
+          UserGroupInformation ugi = 
+            UserGroupInformation.createRemoteUser(token.getUser().toString());
           submitJob(token.getJobID(), restartCount, 
               ugi, token.getJobSubmitDir().toString(), true, null);
           recovered++;
@@ -1187,7 +1232,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   //
 
   // All the known jobs.  (jobid->JobInProgress)
-  Map<JobID, JobInProgress> jobs = new TreeMap<JobID, JobInProgress>();
+  Map<JobID, JobInProgress> jobs =  
+    Collections.synchronizedMap(new TreeMap<JobID, JobInProgress>());
 
   // (trackerID --> list of jobs to cleanup)
   Map<String, Set<JobID>> trackerToJobsToCleanup = 
@@ -1291,11 +1337,12 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   // Some jobs are stored in a local system directory.  We can delete
   // the files when we're done with the job.
   static final String SUBDIR = "jobTracker";
+  final LocalFileSystem localFs;
   FileSystem fs = null;
   Path systemDir = null;
   JobConf conf;
-  private final UserGroupInformation mrOwner;
-  private final String supergroup;
+
+  private final ACLsManager aclsManager;
 
   long limitMaxMemForMapTasks;
   long limitMaxMemForReduceTasks;
@@ -1311,7 +1358,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     retiredJobsCacheSize = 0;
     infoServer = null;
     queueManager = null;
-    supergroup = null;
+    aclsManager = null;
     taskScheduler = null;
     trackerIdentifier = null;
     recoveryManager = null;
@@ -1319,31 +1366,50 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     completedJobStatusStore = null;
     tasktrackerExpiryInterval = 0;
     myInstrumentation = new JobTrackerMetricsInst(this, new JobConf());
-    mrOwner = null;
-    defaultStagingBaseDir = "/Users"; 
+    secretManager = null;
+    localFs = null;
   }
 
   
   JobTracker(JobConf conf) 
-  throws IOException,InterruptedException, LoginException {
+  throws IOException,InterruptedException {
     this(conf, new Clock());
   }
   /**
    * Start the JobTracker process, listen on the indicated port
    */
   JobTracker(JobConf conf, Clock clock) 
-  throws IOException, InterruptedException, LoginException {
+  throws IOException, InterruptedException {
     this(conf, clock, generateNewIdentifier());
   }
 
-  JobTracker(JobConf conf, Clock newClock, String jobtrackerIndentifier) 
-  throws IOException, InterruptedException, LoginException {
-    // find the owner of the process
+  JobTracker(final JobConf conf, Clock newClock, String jobtrackerIndentifier) 
+  throws IOException, InterruptedException {
+    // Set ports, start RPC servers, setup security policy etc.
+    InetSocketAddress addr = getAddress(conf);
+    this.localMachine = addr.getHostName();
+    this.port = addr.getPort();
+    UserGroupInformation.setConfiguration(conf);
+    SecurityUtil.login(conf, JTConfig.JT_KEYTAB_FILE, JTConfig.JT_USER_NAME,
+        localMachine);
+
     clock = newClock;
-    mrOwner = UnixUserGroupInformation.login(conf);
-    supergroup = conf.get(JT_SUPERGROUP, "supergroup");
-    LOG.info("Starting jobtracker with owner as " + mrOwner.getUserName() 
-             + " and supergroup as " + supergroup);
+    
+    long secretKeyInterval = 
+      conf.getLong(MRConfig.DELEGATION_KEY_UPDATE_INTERVAL_KEY, 
+                   MRConfig.DELEGATION_KEY_UPDATE_INTERVAL_DEFAULT);
+    long tokenMaxLifetime =
+      conf.getLong(MRConfig.DELEGATION_TOKEN_MAX_LIFETIME_KEY,
+                   MRConfig.DELEGATION_TOKEN_MAX_LIFETIME_DEFAULT);
+    long tokenRenewInterval =
+      conf.getLong(MRConfig.DELEGATION_TOKEN_RENEW_INTERVAL_KEY, 
+                   MRConfig.DELEGATION_TOKEN_RENEW_INTERVAL_DEFAULT);
+    secretManager = 
+      new DelegationTokenSecretManager(secretKeyInterval,
+                                       tokenMaxLifetime,
+                                       tokenRenewInterval,
+                                       DELEGATION_TOKEN_GC_INTERVAL);
+    secretManager.startThreads();
 
     //
     // Grab some static constants
@@ -1367,6 +1433,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       HEARTBEATS_SCALING_FACTOR = DEFAULT_HEARTBEATS_SCALING_FACTOR;
     }
 
+    HEARTBEAT_INTERVAL_MIN = conf.getInt(JT_HEARTBEAT_INTERVAL_MIN,
+                                         JT_HEARTBEAT_INTERVAL_MIN_DEFAULT);
+
     //This configuration is there solely for tuning purposes and 
     //once this feature has been tested in real clusters and an appropriate
     //value for the threshold has been found, this config might be taken out.
@@ -1383,39 +1452,41 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     this.hostsReader = new HostsFileReader(conf.get(JTConfig.JT_HOSTS_FILENAME, ""),
                                            conf.get(JTConfig.JT_HOSTS_EXCLUDE_FILENAME, ""));
 
-    Configuration queuesConf = new Configuration(this.conf);
-    queueManager = new QueueManager(queuesConf);
+    Configuration clusterConf = new Configuration(this.conf);
+    queueManager = new QueueManager(clusterConf);
     
+    aclsManager = new ACLsManager(conf, new JobACLsManager(conf), queueManager);
+
+    LOG.info("Starting jobtracker with owner as " +
+        getMROwner().getShortUserName());
+
     // Create the scheduler
     Class<? extends TaskScheduler> schedulerClass
       = conf.getClass(JT_TASK_SCHEDULER,
           JobQueueTaskScheduler.class, TaskScheduler.class);
     taskScheduler = (TaskScheduler) ReflectionUtils.newInstance(schedulerClass, conf);
-                                           
-    // Set ports, start RPC servers, setup security policy etc.
-    InetSocketAddress addr = getAddress(conf);
-    this.localMachine = addr.getHostName();
-    this.port = addr.getPort();
-    
-    // Set service-level authorization security policy
-    if (conf.getBoolean(
-          ServiceAuthorizationManager.SERVICE_AUTHORIZATION_CONFIG, false)) {
-      PolicyProvider policyProvider = 
-        (PolicyProvider)(ReflectionUtils.newInstance(
-            conf.getClass(PolicyProvider.POLICY_PROVIDER_CONFIG, 
-                MapReducePolicyProvider.class, PolicyProvider.class), 
-            conf));
-      SecurityUtil.setPolicy(new ConfiguredPolicy(conf, policyProvider));
-    }
     
     int handlerCount = conf.getInt(JT_IPC_HANDLER_COUNT, 10);
-    this.interTrackerServer = RPC.getServer(this, addr.getHostName(), addr.getPort(), handlerCount, false, conf);
+    this.interTrackerServer = RPC.getServer(ClientProtocol.class,
+                                            this,
+                                            addr.getHostName(), 
+                                            addr.getPort(), handlerCount, 
+                                            false, conf, secretManager);
+
+    // Set service-level authorization security policy
+    if (conf.getBoolean(
+        CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
+      this.interTrackerServer.refreshServiceAcl(conf, new MapReducePolicyProvider());
+    }
+
     if (LOG.isDebugEnabled()) {
       Properties p = System.getProperties();
       for (Iterator it = p.keySet().iterator(); it.hasNext();) {
         String key = (String) it.next();
         String val = p.getProperty(key);
-        LOG.debug("Property '" + key + "' is " + val);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug("Property '" + key + "' is " + val);
+        }
       }
     }
 
@@ -1425,7 +1496,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     int tmpInfoPort = infoSocAddr.getPort();
     this.startTime = clock.getTime();
     infoServer = new HttpServer("job", infoBindAddress, tmpInfoPort, 
-        tmpInfoPort == 0, conf);
+        tmpInfoPort == 0, conf, aclsManager.getAdminsAcl());
     infoServer.setAttribute("job.tracker", this);
     // initialize history parameters.
     jobHistory = new JobHistory();
@@ -1456,6 +1527,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     // ... ensure we have the correct info
     this.port = interTrackerServer.getListenerAddress().getPort();
     this.conf.set(JT_IPC_ADDRESS, (this.localMachine + ":" + this.port));
+    this.localFs = FileSystem.getLocal(conf);
     LOG.info("JobTracker up at: " + this.port);
     this.infoPort = this.infoServer.getPort();
     this.conf.set(JT_HTTP_ADDRESS, 
@@ -1469,23 +1541,27 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       try {
         // if we haven't contacted the namenode go ahead and do it
         if (fs == null) {
-          fs = FileSystem.get(conf);
+          fs = getMROwner().doAs(new PrivilegedExceptionAction<FileSystem>() {
+            public FileSystem run() throws IOException {
+              return FileSystem.get(conf);
+          }});
         }
         // clean up the system dir, which will only work if hdfs is out of 
         // safe mode
-        if(systemDir == null) {
+        if (systemDir == null) {
           systemDir = new Path(getSystemDir());    
         }
         try {
           FileStatus systemDirStatus = fs.getFileStatus(systemDir);
-          if (!systemDirStatus.getOwner().equals(mrOwner.getUserName())) {
+          if (!systemDirStatus.getOwner().equals(
+              getMROwner().getShortUserName())) {
             throw new AccessControlException("The systemdir " + systemDir + 
-                " is not owned by " + mrOwner.getUserName());
+                " is not owned by " + getMROwner().getShortUserName());
           }
           if (!systemDirStatus.getPermission().equals(SYSTEM_DIR_PERMISSION)) {
             LOG.warn("Incorrect permissions on " + systemDir + 
                 ". Setting it to " + SYSTEM_DIR_PERMISSION);
-            fs.setPermission(systemDir, SYSTEM_DIR_PERMISSION);
+            fs.setPermission(systemDir,new FsPermission(SYSTEM_DIR_PERMISSION));
           }
         } catch (FileNotFoundException fnf) {} //ignore
         // Make sure that the backup data is preserved
@@ -1514,23 +1590,33 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
             break; // if there is something to recover else clean the sys dir
           }
         }
-        LOG.info("Cleaning up the system directory");
-        fs.delete(systemDir, true);
-        if (FileSystem.mkdirs(fs, systemDir, 
-            new FsPermission(SYSTEM_DIR_PERMISSION))) {
+        if (!fs.exists(systemDir)) {
+          LOG.info("Creating the system directory");
+          if (FileSystem.mkdirs(fs, systemDir, 
+                                new FsPermission(SYSTEM_DIR_PERMISSION))) {
+            // success
+            break;
+          } else {
+            LOG.error("Mkdirs failed to create " + systemDir);
+          }
+        } else {
+          // It exists, just set permissions and clean the contents up
+          LOG.info("Cleaning up the system directory");
+          fs.setPermission(systemDir, new FsPermission(SYSTEM_DIR_PERMISSION));
+          deleteContents(fs, systemDir);
           break;
         }
-        LOG.error("Mkdirs failed to create " + systemDir);
       } catch (AccessControlException ace) {
-        LOG.warn("Failed to operate on " + JTConfig.JT_SYSTEM_DIR + "(" + systemDir 
+        LOG.warn("Failed to operate on " + JTConfig.JT_SYSTEM_DIR + "("
+                 + systemDir.makeQualified(fs)
                  + ") because of permissions.");
-        LOG.warn("Manually delete the " + JTConfig.JT_SYSTEM_DIR + "(" + systemDir 
-                 + ") and then start the JobTracker.");
+        LOG.warn("This directory should exist and be owned by the user '" +
+                 UserGroupInformation.getCurrentUser() + "'");
         LOG.warn("Bailing out ... ");
         throw ace;
       } catch (IOException ie) {
-        LOG.info("problem cleaning system directory: " + systemDir + ": " + ie,
-                ie);
+        LOG.info("problem cleaning system directory: " +
+                 systemDir.makeQualified(fs), ie);
       }
       Thread.sleep(FS_ACCESS_RETRY_PERIOD);
     }
@@ -1545,10 +1631,15 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
 
     // Initialize history DONE folder
     jobHistory.initDone(conf, fs);
-    String historyLogDir = 
+    final String historyLogDir = 
       jobHistory.getCompletedJobHistoryLocation().toString();
     infoServer.setAttribute("historyLogDir", historyLogDir);
-    FileSystem historyFS = new Path(historyLogDir).getFileSystem(conf);
+    FileSystem historyFS = getMROwner().doAs(
+        new PrivilegedExceptionAction<FileSystem>() {
+      public FileSystem run() throws IOException {
+        return new Path(historyLogDir).getFileSystem(conf);
+      }
+    });
     infoServer.setAttribute("fileSys", historyFS);
 
     this.dnsToSwitchMapping = ReflectionUtils.newInstance(
@@ -1558,9 +1649,19 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         NetworkTopology.DEFAULT_HOST_LEVEL);
 
     //initializes the job status store
-    completedJobStatusStore = new CompletedJobStatusStore(conf);
-    Path homeDir = fs.getHomeDirectory();
-    defaultStagingBaseDir = homeDir.getParent().toString();
+    completedJobStatusStore = new CompletedJobStatusStore(conf, aclsManager);
+  }
+
+  /**
+   * Recursively delete the contents of a directory without deleting the
+   * directory itself.
+   */
+  private void deleteContents(FileSystem fs, Path dir) throws IOException {
+    for (FileStatus stat : fs.listStatus(dir)) {
+      if (!fs.delete(stat.getPath(), true)) {
+        throw new IOException("Unable to delete " + stat.getPath());
+      }
+    }
   }
 
   private static SimpleDateFormat getDateFormat() {
@@ -1611,19 +1712,11 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
 
   /**
-   * Get the FileSystem for the given path. This can be used to resolve
-   * filesystem for job history, local job files or mapreduce.system.dir path.
-   */
-  FileSystem getFileSystem(Path path) throws IOException {
-    return path.getFileSystem(conf);
-  }
-
-  /**
    * Get JobTracker's LocalFileSystem handle. This is used by jobs for 
    * localizing job files to the local disk.
    */
   LocalFileSystem getLocalFileSystem() throws IOException {
-    return FileSystem.getLocal(conf);
+    return localFs;
   }
 
   TaskScheduler getScheduler() {
@@ -1745,7 +1838,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     if (jobHistory != null) {
       jobHistory.shutDown();
     }
-    
+    DelegationTokenRenewal.close();
     LOG.info("stopped all jobtracker services");
     return;
   }
@@ -1823,7 +1916,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     }
     taskset.add(taskid);
       
-    LOG.debug("Marked '" + taskid + "' from '" + taskTracker + "'");
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Marked '" + taskid + "' from '" + taskTracker + "'");
+    }
   }
 
   /**
@@ -2221,25 +2316,27 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
   
   private Node addHostToNodeMapping(String host, String networkLoc) {
-    Node node;
-    if ((node = clusterMap.getNode(networkLoc+"/"+host)) == null) {
-      node = new NodeBase(host, networkLoc);
-      clusterMap.add(node);
-      if (node.getLevel() < getNumTaskCacheLevels()) {
-        LOG.fatal("Got a host whose level is: " + node.getLevel() + "." 
-                  + " Should get at least a level of value: " 
-                  + getNumTaskCacheLevels());
-        try {
-          stopTracker();
-        } catch (IOException ie) {
-          LOG.warn("Exception encountered during shutdown: " 
-                   + StringUtils.stringifyException(ie));
-          System.exit(-1);
+    Node node = null;
+    synchronized (nodesAtMaxLevel) {
+      if ((node = clusterMap.getNode(networkLoc+"/"+host)) == null) {
+        node = new NodeBase(host, networkLoc);
+        clusterMap.add(node);
+        if (node.getLevel() < getNumTaskCacheLevels()) {
+          LOG.fatal("Got a host whose level is: " + node.getLevel() + "." 
+              + " Should get at least a level of value: " 
+              + getNumTaskCacheLevels());
+          try {
+            stopTracker();
+          } catch (IOException ie) {
+            LOG.warn("Exception encountered during shutdown: " 
+                + StringUtils.stringifyException(ie));
+            System.exit(-1);
+          }
         }
+        hostnameToNodeMap.put(host, node);
+        // Make an entry for the node at the max level in the cache
+        nodesAtMaxLevel.add(getParentNode(node, getNumTaskCacheLevels() - 1));
       }
-      hostnameToNodeMap.put(host, node);
-      // Make an entry for the node at the max level in the cache
-      nodesAtMaxLevel.add(getParentNode(node, getNumTaskCacheLevels() - 1));
     }
     return node;
   }
@@ -2407,7 +2504,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         if (tasks != null) {
           for (Task task : tasks) {
             expireLaunchingTasks.addNewTask(task.getTaskID());
-            LOG.debug(trackerName + " -> LaunchTask: " + task.getTaskID());
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(trackerName + " -> LaunchTask: " + task.getTaskID());
+            }
             actions.add(new LaunchTaskAction(task));
           }
         }
@@ -2457,7 +2556,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     int clusterSize = getClusterStatus().getTaskTrackers();
     int heartbeatInterval =  Math.max(
                                 (int)(1000 * HEARTBEATS_SCALING_FACTOR *
-                                      Math.ceil((double)clusterSize / 
+                                      ((double)clusterSize / 
                                                 NUM_HEARTBEATS_IN_SECOND)),
                                 HEARTBEAT_INTERVAL_MIN) ;
     return heartbeatInterval;
@@ -2640,6 +2739,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   synchronized boolean processHeartbeat(
                                  TaskTrackerStatus trackerStatus, 
                                  boolean initialContact) {
+    
+    getInstrumentation().heartbeat();
+
     String trackerName = trackerStatus.getTrackerName();
 
     synchronized (taskTrackers) {
@@ -2701,7 +2803,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
           //
           if (!tip.getJob().isComplete()) {
             killList.add(new KillTaskAction(killTaskId));
-            LOG.debug(taskTracker + " -> KillTaskAction: " + killTaskId);
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(taskTracker + " -> KillTaskAction: " + killTaskId);
+            }
           }
         }
       }
@@ -2724,7 +2828,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    */
   private void addJobForCleanup(JobID id) {
     for (String taskTracker : taskTrackers.keySet()) {
-      LOG.debug("Marking job " + id + " for cleanup by tracker " + taskTracker);
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Marking job " + id
+                  + " for cleanup by tracker " + taskTracker);
+      }
       synchronized (trackerToJobsToCleanup) {
         Set<JobID> jobsToKill = trackerToJobsToCleanup.get(taskTracker);
         if (jobsToKill == null) {
@@ -2749,7 +2856,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       List<TaskTrackerAction> killList = new ArrayList<TaskTrackerAction>();
       for (JobID killJobId : jobs) {
         killList.add(new KillJobAction(killJobId));
-        LOG.debug(taskTracker + " -> KillJobAction: " + killJobId);
+        if (LOG.isDebugEnabled()) {
+          LOG.debug(taskTracker + " -> KillJobAction: " + killJobId);
+        }
       }
 
       return killList;
@@ -2774,8 +2883,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
           }
           if (tip.shouldCommit(taskId)) {
             saveList.add(new CommitTaskAction(taskId));
-            LOG.debug(tts.getTrackerName() + 
-                      " -> CommitTaskAction: " + taskId);
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(tts.getTrackerName() + 
+                        " -> CommitTaskAction: " + taskId);
+            }
           }
         }
       }
@@ -2793,6 +2904,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     int numReduces = taskTracker.countOccupiedReduceSlots();
     int numTaskTrackers = getClusterStatus().getTaskTrackers();
     int numUniqueHosts = getNumberOfUniqueHosts();
+    boolean hasFailedUncleanTask = hasFailedUncleanTask(taskTracker);
 
     Task t = null;
     synchronized (jobs) {
@@ -2806,12 +2918,15 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
             return Collections.singletonList(t);
           }
         }
-        for (Iterator<JobInProgress> it = jobs.values().iterator();
-             it.hasNext();) {
-          JobInProgress job = it.next();
-          t = job.obtainTaskCleanupTask(taskTracker, true);
-          if (t != null) {
-            return Collections.singletonList(t);
+        // Don't schedule task-cleanup task on the node that the task just failed.
+        if (!hasFailedUncleanTask) {
+          for (Iterator<JobInProgress> it = jobs.values().iterator();
+               it.hasNext();) {
+            JobInProgress job = it.next();
+            t = job.obtainTaskCleanupTask(taskTracker, true);
+            if (t != null) {
+              return Collections.singletonList(t);
+            }
           }
         }
         for (Iterator<JobInProgress> it = jobs.values().iterator();
@@ -2834,12 +2949,15 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
             return Collections.singletonList(t);
           }
         }
-        for (Iterator<JobInProgress> it = jobs.values().iterator();
-             it.hasNext();) {
-          JobInProgress job = it.next();
-          t = job.obtainTaskCleanupTask(taskTracker, false);
-          if (t != null) {
-            return Collections.singletonList(t);
+        // Don't schedule task-cleanup task on the node that the task just failed.
+        if (!hasFailedUncleanTask) {
+          for (Iterator<JobInProgress> it = jobs.values().iterator();
+               it.hasNext();) {
+            JobInProgress job = it.next();
+            t = job.obtainTaskCleanupTask(taskTracker, false);
+            if (t != null) {
+              return Collections.singletonList(t);
+            }
           }
         }
         for (Iterator<JobInProgress> it = jobs.values().iterator();
@@ -2857,6 +2975,18 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
 
   /**
+   * Whether this tracker has tasks with FAILED_UNCLEAN state.   
+   */
+  static boolean hasFailedUncleanTask(TaskTrackerStatus taskTracker) {
+    for (TaskStatus taskStatus : taskTracker.getTaskReports()) {
+      if (taskStatus.getRunState() == TaskStatus.State.FAILED_UNCLEAN) {
+        return true;
+      }
+    }
+    return false;
+  }
+  
+  /**
    * Grab the local fs name
    */
   public synchronized String getFilesystemName() throws IOException {
@@ -2866,7 +2996,13 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     return fs.getUri().toString();
   }
 
-
+  /**
+   * Returns a handle to the JobTracker's Configuration
+   */
+  public JobConf getConf() {
+    return conf;
+  }
+  
   public void reportTaskTrackerError(String taskTracker,
                                      String errorClass,
                                      String errorMessage) throws IOException {
@@ -2889,17 +3025,16 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @deprecated use {@link #getNewJobID()} instead
    */
   @Deprecated
-  public synchronized JobID getNewJobId() throws IOException {
+  public JobID getNewJobId() throws IOException {
     return JobID.downgrade(getNewJobID());
   }
 
   /**
    * Allocates a new JobId string.
    */
-  public synchronized org.apache.hadoop.mapreduce.JobID getNewJobID()
-      throws IOException {
-    return new org.apache.hadoop.mapreduce.JobID(
-      getTrackerIdentifier(), nextJobId++);
+  public org.apache.hadoop.mapreduce.JobID getNewJobID() throws IOException {
+    return new org.apache.hadoop.mapreduce.JobID
+      (getTrackerIdentifier(), nextJobId.getAndIncrement());
   }
 
   /**
@@ -2910,9 +3045,11 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * of the JobTracker.  But JobInProgress adds info that's useful for
    * the JobTracker alone.
    */
-  public synchronized org.apache.hadoop.mapreduce.JobStatus submitJob(
-    org.apache.hadoop.mapreduce.JobID jobId,String jobSubmitDir, TokenStorage ts) 
-  throws IOException {  
+  public synchronized 
+  org.apache.hadoop.mapreduce.JobStatus 
+    submitJob(org.apache.hadoop.mapreduce.JobID jobId, String jobSubmitDir,
+              Credentials ts
+              ) throws IOException, InterruptedException {
     return submitJob(JobID.downgrade(jobId), jobSubmitDir, ts);
   }
   
@@ -2924,73 +3061,84 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * of the JobTracker.  But JobInProgress adds info that's useful for
    * the JobTracker alone.
    * @deprecated Use 
-   * {@link #submitJob(org.apache.hadoop.mapreduce.JobID, String, TokenStorage)}
+   * {@link #submitJob(org.apache.hadoop.mapreduce.JobID, String, Credentials)}
    *  instead
    */
   @Deprecated
-  public synchronized JobStatus submitJob(
-      JobID jobId, String jobSubmitDir, TokenStorage ts) 
-  throws IOException {
-    return submitJob(jobId, 0, 
-        UserGroupInformation.getCurrentUGI(), 
-        jobSubmitDir, false, ts);
+  public JobStatus submitJob(JobID jobId, String jobSubmitDir, Credentials ts)
+      throws IOException, InterruptedException {
+
+    return submitJob(jobId, 0, UserGroupInformation.getCurrentUser(), 
+                     jobSubmitDir, false, ts);
   }
 
   /**
    * Submits either a new job or a job from an earlier run.
    */
-  private synchronized JobStatus submitJob(org.apache.hadoop.mapreduce.JobID jobID, 
-      int restartCount, UserGroupInformation ugi, String jobSubmitDir, 
-      boolean recovered, TokenStorage ts) throws IOException {
-    JobID jobId = JobID.downgrade(jobID);
-    if(jobs.containsKey(jobId)) {
-      //job already running, don't start twice
-      return jobs.get(jobId).getStatus();
+  private JobStatus submitJob(org.apache.hadoop.mapreduce.JobID jobID, 
+			      int restartCount, UserGroupInformation ugi, 
+			      String jobSubmitDir, boolean recovered, Credentials ts
+			      )
+      throws IOException, InterruptedException {
+
+    JobID jobId = null;
+
+    JobInfo jobInfo;
+
+    synchronized (this) {
+      jobId = JobID.downgrade(jobID);
+      if (jobs.containsKey(jobId)) {
+        // job already running, don't start twice
+        return jobs.get(jobId).getStatus();
+      }
+
+      // the conversion from String to Text for the UGI's username will
+      // not be required when we have the UGI to return us the username as
+      // Text.
+      jobInfo =
+          new JobInfo(jobId, new Text(ugi.getShortUserName()), new Path(
+              jobSubmitDir));
     }
 
-    //the conversion from String to Text for the UGI's username will
-    //not be required when we have the UGI to return us the username as
-    //Text.
-    JobInfo jobInfo = new JobInfo(jobId, new Text(ugi.getUserName()), 
-        new Path(jobSubmitDir));
-    JobInProgress job = 
-      new JobInProgress(this, this.conf, restartCount, jobInfo, ts);
-    
-    String queue = job.getProfile().getQueueName();
-    if(!(queueManager.getLeafQueueNames().contains(queue))) {
-      throw new IOException("Queue \"" + queue + "\" does not exist");        
-    }
-    
-    //check if queue is RUNNING
-    if(!queueManager.isRunning(queue)) {
-      throw new IOException("Queue \"" + queue + "\" is not running");
-    }
-    try {
-      checkAccess(job, Queue.QueueOperation.SUBMIT_JOB, ugi);
-    } catch (IOException ioe) {
-      LOG.warn("Access denied for user " + job.getJobConf().getUser() 
-          + ". Ignoring job " + jobId, ioe);
-      throw ioe;
-    }
+    // Create the JobInProgress, temporarily unlock the JobTracker since
+    // we are about to copy job.xml from HDFSJobInProgress
+    JobInProgress job =
+        new JobInProgress(this, this.conf, restartCount, jobInfo, ts);
 
-    // Check the job if it cannot run in the cluster because of invalid memory
-    // requirements.
-    try {
-      checkMemoryRequirements(job);
-    } catch (IOException ioe) {
-      throw ioe;
-    }
+    synchronized (this) {
+      try {
+        checkQueueValidity(job);
+      } catch(IOException ioe) {
+        LOG.error("Queue given for job " + job.getJobID() + " is not valid: " + ioe);
+        throw ioe;
+      }
+      try {
+        aclsManager.checkAccess(job, ugi, Operation.SUBMIT_JOB);
+      } catch (AccessControlException ace) {
+        LOG.warn("Access denied for user " + job.getJobConf().getUser()
+            + ". Ignoring job " + jobId, ace);
+        throw ace;
+      }
 
-    if (!recovered) {
-      //Store the information in a file so that the job can be recovered
-      //later (if at all)
-      Path jobDir = getSystemDirectoryForJob(jobId);
-      FileSystem.mkdirs(fs, jobDir, new FsPermission(SYSTEM_DIR_PERMISSION));
-      FSDataOutputStream out = fs.create(getSystemFileForJob(jobId));
-      jobInfo.write(out);
-      out.close();
+      // Check the job if it cannot run in the cluster because of invalid memory
+      // requirements.
+      try {
+        checkMemoryRequirements(job);
+      } catch (IOException ioe) {
+        throw ioe;
+      }
+
+      if (!recovered) {
+        // Store the information in a file so that the job can be recovered
+        // later (if at all)
+        Path jobDir = getSystemDirectoryForJob(jobId);
+        FileSystem.mkdirs(fs, jobDir, new FsPermission(SYSTEM_DIR_PERMISSION));
+        FSDataOutputStream out = fs.create(getSystemFileForJob(jobId));
+        jobInfo.write(out);
+        out.close();
+      }
+      return addJob(jobId, job);
     }
-    return addJob(jobId, job); 
   }
 
   /**
@@ -3018,33 +3166,35 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     LOG.info("Job " + jobId + " added successfully for user '" 
              + job.getJobConf().getUser() + "' to queue '" 
              + job.getJobConf().getQueueName() + "'");
+
     return job.getStatus();
   }
 
-  // Check whether the specified operation can be performed
-  // related to the job.
-  private void checkAccess(JobInProgress job, 
-                                Queue.QueueOperation oper) 
-                                  throws IOException {
-    // get the user group info
-    UserGroupInformation ugi = UserGroupInformation.getCurrentUGI();
-    checkAccess(job, oper, ugi);
+  /**
+   * For a JobInProgress that is being submitted, check whether 
+   * queue that the job has been submitted to exists and is RUNNING.
+   * @param job The JobInProgress object being submitted.
+   * @throws IOException
+   */
+  public void checkQueueValidity(JobInProgress job) throws IOException {
+    String queue = job.getProfile().getQueueName();
+    if (!(queueManager.getLeafQueueNames().contains(queue))) {
+        throw new IOException("Queue \"" + queue + "\" does not exist");
+    }
+
+    // check if queue is RUNNING
+    if (!queueManager.isRunning(queue)) {
+        throw new IOException("Queue \"" + queue + "\" is not running");
+    }
   }
 
-  // use the passed ugi for checking the access
-  private void checkAccess(JobInProgress job, Queue.QueueOperation oper,
-                           UserGroupInformation ugi) throws IOException {
-    // get the queue
-    String queue = job.getProfile().getQueueName();
-    if (!queueManager.hasAccess(queue, job, oper, ugi)) {
-      throw new AccessControlException("User " 
-                            + ugi.getUserName() 
-                            + " cannot perform "
-                            + "operation " + oper + " on queue " + queue +
-                            ".\n Please run \"hadoop queue -showacls\" " +
-                            "command to find the queues you have access" +
-                            " to .");
-    }
+  /**
+   * Are ACLs for authorization checks enabled on the MR cluster ?
+   *
+   * @return true if ACLs(job acls and queue acls) are enabled
+   */
+  boolean areACLsEnabled() {
+    return conf.getBoolean(MRConfig.MR_ACLS_ENABLED, false);
   }
 
   /**@deprecated use {@link #getClusterStatus(boolean)}*/
@@ -3131,6 +3281,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     return info;
   }
 
+  /**
+   * @see ClientProtocol#killJob(org.apache.hadoop.mapreduce.JobID)
+   */
+  @Override
   public synchronized void killJob(org.apache.hadoop.mapreduce.JobID jobid) 
       throws IOException {
     killJob(JobID.downgrade(jobid));
@@ -3152,8 +3306,11 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       LOG.info("killJob(): JobId " + jobid.toString() + " is not a valid job");
       return;
     }
-        
-    checkAccess(job, Queue.QueueOperation.ADMINISTER_JOBS);
+
+    // check both queue-level and job-level access
+    aclsManager.checkAccess(job, UserGroupInformation.getCurrentUser(),
+        Operation.KILL_JOB);
+
     killJob(job);
   }
 
@@ -3264,8 +3421,9 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
 
   /**
    * Set the priority of a job
-   * @param jobid id of the job
-   * @param priority new priority of the job
+   * @param jobid
+   * @param priority
+   * @throws IOException
    */
   public synchronized void setJobPriority(org.apache.hadoop.mapreduce.JobID 
       jobid, String priority) throws IOException {
@@ -3280,15 +3438,14 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    */
   @Deprecated
   public synchronized void setJobPriority(JobID jobid, 
-                                              String priority)
-                                                throws IOException {
+                                          String priority)
+                                          throws IOException {
     JobInProgress job = jobs.get(jobid);
     if (null == job) {
         LOG.info("setJobPriority(): JobId " + jobid.toString()
             + " is not a valid job");
         return;
     }
-    checkAccess(job, Queue.QueueOperation.ADMINISTER_JOBS);
     JobPriority newPriority = JobPriority.valueOf(priority);
     setJobPriority(jobid, newPriority);
   }
@@ -3303,6 +3460,18 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
   
   /**
+   * Check if the <code>job</code> has been initialized.
+   * 
+   * @param job {@link JobInProgress} to be checked
+   * @return <code>true</code> if the job has been initialized,
+   *         <code>false</code> otherwise
+   */
+  private boolean isJobInited(JobInProgress job) {
+    return job.inited(); 
+  }
+  
+
+  /**
    * @deprecated Use {@link #getJobProfile(org.apache.hadoop.mapreduce.JobID)} 
    * instead
    */
@@ -3311,12 +3480,18 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     synchronized (this) {
       JobInProgress job = jobs.get(jobid);
       if (job != null) {
+        // Safe to call JobInProgress.getProfile while holding the lock
+        // on the JobTracker since it isn't a synchronized method
         return job.getProfile();
       } 
     }
     return completedJobStatusStore.readJobProfile(jobid);
   }
-  
+
+  /**
+   * see {@link ClientProtocol#getJobStatus(org.apache.hadoop.mapreduce.JobID)}
+   */
+  @Override
   public JobStatus getJobStatus(org.apache.hadoop.mapreduce.JobID jobid) {
     return getJobStatus(JobID.downgrade(jobid));
   }
@@ -3334,9 +3509,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     synchronized (this) {
       JobInProgress job = jobs.get(jobid);
       if (job != null) {
+        // Safe to call JobInProgress.getStatus while holding the lock
+        // on the JobTracker since it isn't a synchronized method
         return job.getStatus();
       } else {
-        
         JobStatus status = retireJobs.get(jobid);
         if (status != null) {
           return status;
@@ -3345,10 +3521,45 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     }
     return completedJobStatusStore.readJobStatus(jobid);
   }
-  
+
+  private static final org.apache.hadoop.mapreduce.Counters EMPTY_COUNTERS
+      = new org.apache.hadoop.mapreduce.Counters();
+
+  /**
+   * see
+   * {@link ClientProtocol#getJobCounters(org.apache.hadoop.mapreduce.JobID)}
+   * 
+   * @throws IOException
+   * @throws AccessControlException
+   */
+  @Override
   public org.apache.hadoop.mapreduce.Counters getJobCounters(
-      org.apache.hadoop.mapreduce.JobID jobid) {
-    Counters counters = getJobCounters(JobID.downgrade(jobid));
+      org.apache.hadoop.mapreduce.JobID jobid)
+      throws AccessControlException, IOException {
+
+    JobID oldJobID = JobID.downgrade(jobid);
+    JobInProgress job;
+    synchronized (this) {
+      job = jobs.get(oldJobID);
+    }
+
+    if (job != null) {
+      // check the job-access
+      aclsManager.checkAccess(job, UserGroupInformation.getCurrentUser(),
+                              Operation.VIEW_JOB_COUNTERS);
+
+      if (!isJobInited(job)) {
+        return EMPTY_COUNTERS;
+      }
+
+      Counters counters = job.getCounters();
+      if (counters != null) {
+        return new org.apache.hadoop.mapreduce.Counters(counters);
+      }
+      return null;
+    } 
+
+    Counters counters = completedJobStatusStore.readCounters(oldJobID);
     if (counters != null) {
       return new org.apache.hadoop.mapreduce.Counters(counters);
     }
@@ -3361,15 +3572,18 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    */
   @Deprecated
   public Counters getJobCounters(JobID jobid) {
-    synchronized (this) {
-      JobInProgress job = jobs.get(jobid);
-      if (job != null) {
-        return job.getCounters();
-      } 
-    }
-    return completedJobStatusStore.readCounters(jobid);
+    try {
+      return Counters.downgrade(
+          getJobCounters((org.apache.hadoop.mapreduce.JobID) jobid));
+    } catch (AccessControlException e) {
+      return null;
+    } catch (IOException e) {
+      return null;
+    } 
   }
-  
+
+  private static final TaskReport[] EMPTY_TASK_REPORTS = new TaskReport[0];
+
   /**
    * @param jobid
    * @return array of TaskReport
@@ -3380,8 +3594,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   @Deprecated
   public synchronized TaskReport[] getMapTaskReports(JobID jobid) {
     JobInProgress job = jobs.get(jobid);
-    if (job == null) {
-      return new TaskReport[0];
+    if (job == null || !isJobInited(job)) {
+      return EMPTY_TASK_REPORTS;
     } else {
       Vector<TaskReport> reports = new Vector<TaskReport>();
       Vector<TaskInProgress> completeMapTasks =
@@ -3410,8 +3624,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   @Deprecated
   public synchronized TaskReport[] getReduceTaskReports(JobID jobid) {
     JobInProgress job = jobs.get(jobid);
-    if (job == null) {
-      return new TaskReport[0];
+    if (job == null || !isJobInited(job)) {
+      return EMPTY_TASK_REPORTS;
     } else {
       Vector<TaskReport> reports = new Vector<TaskReport>();
       Vector completeReduceTasks = job.reportTasksInProgress(false, true);
@@ -3438,8 +3652,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   @Deprecated
   public synchronized TaskReport[] getCleanupTaskReports(JobID jobid) {
     JobInProgress job = jobs.get(jobid);
-    if (job == null) {
-      return new TaskReport[0];
+    if (job == null || !isJobInited(job)) {
+      return EMPTY_TASK_REPORTS;
     } else {
       Vector<TaskReport> reports = new Vector<TaskReport>();
       Vector<TaskInProgress> completeTasks = job.reportCleanupTIPs(true);
@@ -3469,8 +3683,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   @Deprecated
   public synchronized TaskReport[] getSetupTaskReports(JobID jobid) {
     JobInProgress job = jobs.get(jobid);
-    if (job == null) {
-      return new TaskReport[0];
+    if (job == null || !isJobInited(job)) {
+      return EMPTY_TASK_REPORTS;
     } else {
       Vector<TaskReport> reports = new Vector<TaskReport>();
       Vector<TaskInProgress> completeTasks = job.reportSetupTIPs(true);
@@ -3489,8 +3703,26 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     }
   }
 
+  /**
+   * see
+   * {@link ClientProtocol#getTaskReports(org.apache.hadoop.mapreduce.JobID, TaskType)}
+   * @throws IOException 
+   * @throws AccessControlException 
+   */
+  @Override
   public synchronized TaskReport[] getTaskReports(
-      org.apache.hadoop.mapreduce.JobID jobid, TaskType type) {
+      org.apache.hadoop.mapreduce.JobID jobid, TaskType type)
+      throws AccessControlException, IOException {
+
+    // Check authorization
+    JobInProgress job = jobs.get(jobid);
+    if (job != null) {
+      aclsManager.checkAccess(job, UserGroupInformation.getCurrentUser(),
+          Operation.VIEW_JOB_DETAILS);
+    } else { 
+      return EMPTY_TASK_REPORTS;
+    }
+
     switch (type) {
       case MAP :
         return getMapTaskReports(JobID.downgrade(jobid));
@@ -3501,16 +3733,14 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       case JOB_SETUP :
         return getSetupTaskReports(JobID.downgrade(jobid));
     }
-    return new TaskReport[0];
+    return EMPTY_TASK_REPORTS;
   }
-
-  TaskCompletionEvent[] EMPTY_EVENTS = new TaskCompletionEvent[0];
 
   /* 
    * Returns a list of TaskCompletionEvent for the given job, 
    * starting from fromEventId.
    */
-  public synchronized TaskCompletionEvent[] getTaskCompletionEvents(
+  public TaskCompletionEvent[] getTaskCompletionEvents(
       org.apache.hadoop.mapreduce.JobID jobid, int fromEventId, int maxEvents)
       throws IOException {
     return getTaskCompletionEvents(JobID.downgrade(jobid),
@@ -3523,20 +3753,19 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @see org.apache.hadoop.mapred.JobSubmissionProtocol#getTaskCompletionEvents(java.lang.String, int, int)
    */
   @Deprecated
-  public synchronized TaskCompletionEvent[] getTaskCompletionEvents(
-      JobID jobid, int fromEventId, int maxEvents) throws IOException{
-    synchronized (this) {
-      JobInProgress job = this.jobs.get(jobid);
-      if (null != job) {
-        if (job.inited()) {
-          return job.getTaskCompletionEvents(fromEventId, maxEvents);
-        } else {
-          return EMPTY_EVENTS;
-        }
-      }
+  public TaskCompletionEvent[] getTaskCompletionEvents(
+    JobID jobid, int fromEventId, int maxEvents) throws IOException{
+
+    JobInProgress job = this.jobs.get(jobid);
+    if (null != job) {
+      return job.inited() ? job.getTaskCompletionEvents(fromEventId, maxEvents)
+	  : TaskCompletionEvent.EMPTY_ARRAY;
     }
+
     return completedJobStatusStore.readJobTaskCompletionEvents(jobid, fromEventId, maxEvents);
   }
+
+  private static final String[] EMPTY_TASK_DIAGNOSTICS = new String[0];
 
   /**
    * Get the diagnostics for a given task
@@ -3548,6 +3777,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       throws IOException {
     return getTaskDiagnostics(TaskAttemptID.downgrade(taskId));
   }
+
   /**
    * Get the diagnostics for a given task
    * @param taskId the id of the task
@@ -3561,15 +3791,21 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     TaskID tipId = taskId.getTaskID();
     JobInProgress job = jobs.get(jobId);
     if (job != null) {
-      TaskInProgress tip = job.getTaskInProgress(tipId);
-      if (tip != null) {
-        taskDiagnosticInfo = tip.getDiagnosticInfo(taskId);
-      }
-      
+
+      // check the access to the job.
+      aclsManager.checkAccess(job, UserGroupInformation.getCurrentUser(),
+          Operation.VIEW_JOB_DETAILS);
+
+      if (isJobInited(job)) {
+        TaskInProgress tip = job.getTaskInProgress(tipId);
+        if (tip != null) {
+          taskDiagnosticInfo = tip.getDiagnosticInfo(taskId);
+        }
+      }      
     }
     
-    return ((taskDiagnosticInfo == null) ? new String[0] 
-            : taskDiagnosticInfo.toArray(new String[0]));
+    return ((taskDiagnosticInfo == null) ? EMPTY_TASK_DIAGNOSTICS :
+             taskDiagnosticInfo.toArray(new String[taskDiagnosticInfo.size()]));
   }
     
   /** Get all the TaskStatuses from the tipid. */
@@ -3610,6 +3846,11 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     return (job == null ? null : job.getTaskInProgress(tipid));
   }
 
+  /**
+   * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#killTask(org.apache.hadoop.mapreduce.TaskAttemptID,
+   *      boolean)
+   */
+  @Override
   public synchronized boolean killTask(
       org.apache.hadoop.mapreduce.TaskAttemptID taskid,
       boolean shouldFail) throws IOException {
@@ -3618,10 +3859,16 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   
   /** Mark a Task to be killed */
   @Deprecated
-  public synchronized boolean killTask(TaskAttemptID taskid, boolean shouldFail) throws IOException{
+  public synchronized boolean killTask(TaskAttemptID taskid, 
+      boolean shouldFail) throws IOException {
     TaskInProgress tip = taskidToTIPMap.get(taskid);
-    if(tip != null) {
-      checkAccess(tip.getJob(), Queue.QueueOperation.ADMINISTER_JOBS);
+    if (tip != null) {
+
+      // check both queue-level and job-level access
+      aclsManager.checkAccess(tip.getJob(),
+          UserGroupInformation.getCurrentUser(),
+          shouldFail ? Operation.FAIL_TASK : Operation.KILL_TASK);
+
       return tip.killTask(taskid, shouldFail);
     }
     else {
@@ -3642,7 +3889,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   public JobStatus[] jobsToComplete() {
     return getJobStatus(jobs.values(), true);
   } 
-  
+
+  /**
+   * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getSystemDir()
+   */
   public org.apache.hadoop.mapreduce.JobStatus[] getAllJobs() {
     List<JobStatus> list = new ArrayList<JobStatus>();
     list.addAll(Arrays.asList(getJobStatus(jobs.values(),false)));
@@ -3659,14 +3909,26 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   }
   
   /**
+   * @throws LoginException 
    * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getStagingAreaDir()
    */
-  public String getStagingAreaDir() {
-    Path stagingRootDir = new Path(conf.get(JTConfig.JT_STAGING_AREA_ROOT, 
-        defaultStagingBaseDir));
-    String user = UserGroupInformation.getCurrentUGI().getUserName();
-    return fs.makeQualified(new Path(stagingRootDir, 
-                                user+"/.staging")).toString();
+  public String getStagingAreaDir() throws IOException {
+    try {
+      final String user =
+          UserGroupInformation.getCurrentUser().getShortUserName();
+      return getMROwner().doAs(new PrivilegedExceptionAction<String>() {
+        @Override
+        public String run() throws Exception {
+          Path stagingRootDir = new Path(conf.get(JTConfig.JT_STAGING_AREA_ROOT, 
+          "/tmp/hadoop/mapred/staging"));
+          FileSystem fs = stagingRootDir.getFileSystem(conf);
+          return fs.makeQualified(new Path(stagingRootDir, 
+                                      user+"/.staging")).toString();
+      }
+      });
+    } catch(InterruptedException ie) {
+      throw new IOException(ie);
+    }
   }
   
   /**
@@ -3675,6 +3937,18 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    */
   public String getJobHistoryDir() {
     return jobHistory.getCompletedJobHistoryLocation().toString();
+  }
+
+  /**
+   * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getQueueAdmins(String)
+   */
+  public AccessControlList getQueueAdmins(String queueName) throws IOException {
+	  AccessControlList acl =
+		  queueManager.getQueueACL(queueName, QueueACL.ADMINISTER_JOBS);
+	  if (acl == null) {
+		  acl = new AccessControlList(" ");
+	  }
+	  return acl;
   }
 
   ///////////////////////////////////////////////////////////////
@@ -3696,12 +3970,21 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
 
   /**
    * Change the run-time priority of the given job.
+   * 
    * @param jobId job id
    * @param priority new {@link JobPriority} for the job
+   * @throws IOException
+   * @throws AccessControlException
    */
-  synchronized void setJobPriority(JobID jobId, JobPriority priority) {
+  synchronized void setJobPriority(JobID jobId, JobPriority priority)
+      throws AccessControlException, IOException {
     JobInProgress job = jobs.get(jobId);
     if (job != null) {
+
+      // check both queue-level and job-level access
+      aclsManager.checkAccess(job, UserGroupInformation.getCurrentUser(),
+          Operation.SET_JOB_PRIORITY);
+
       synchronized (taskScheduler) {
         JobStatus oldStatus = (JobStatus)job.getStatus().clone();
         job.setPriority(priority);
@@ -3881,19 +4164,31 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       removeMarkedTasks(trackerName);
     }
   }
-  
+
   /**
    * Rereads the config to get hosts and exclude list file names.
    * Rereads the files to update the hosts and exclude lists.
    */
   public synchronized void refreshNodes() throws IOException {
+    String user = UserGroupInformation.getCurrentUser().getShortUserName();
     // check access
-    PermissionChecker.checkSuperuserPrivilege(mrOwner, supergroup);
+    if (!aclsManager.isMRAdmin(UserGroupInformation.getCurrentUser())) {
+      AuditLogger.logFailure(user, Constants.REFRESH_NODES,
+          aclsManager.getAdminsAcl().toString(), Constants.JOBTRACKER,
+          Constants.UNAUTHORIZED_USER);
+      throw new AccessControlException(user + 
+                                       " is not authorized to refresh nodes.");
+    }
     
+    AuditLogger.logSuccess(user, Constants.REFRESH_NODES, Constants.JOBTRACKER);
     // call the actual api
     refreshHosts();
   }
-  
+
+  UserGroupInformation getMROwner() {
+    return aclsManager.getMROwner();
+  }
+
   private synchronized void refreshHosts() throws IOException {
     // Reread the config to get HOSTS and HOSTS_EXCLUDE filenames.
     // Update the file names and refresh internal includes and excludes list
@@ -3962,7 +4257,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     StringUtils.startupShutdownMessage(JobTracker.class, argv, LOG);
     
     try {
-      if(argv.length == 0) {
+      if (argv.length == 0) {
         JobTracker tracker = startTracker(new JobConf());
         tracker.offerService();
       }
@@ -3970,8 +4265,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         if ("-dumpConfiguration".equals(argv[0]) && argv.length == 1) {
           dumpConfiguration(new PrintWriter(System.out));
           System.out.println();
-          QueueManager.dumpConfiguration(new PrintWriter(System.out),
-              new JobConf());
+          Configuration conf = new Configuration();
+          QueueManager.dumpConfiguration(new PrintWriter(System.out), conf);
         }
         else {
           System.out.println("usage: JobTracker [-dumpConfiguration]");
@@ -4071,13 +4366,13 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   
   @Override
   public org.apache.hadoop.mapreduce.QueueAclsInfo[] 
-      getQueueAclsForCurrentUser() throws IOException{
-    return queueManager.getQueueAcls(
-            UserGroupInformation.getCurrentUGI());
+      getQueueAclsForCurrentUser() throws IOException {
+    return queueManager.getQueueAcls(UserGroupInformation.getCurrentUser());
   }
+
   private synchronized JobStatus[] getJobStatus(Collection<JobInProgress> jips,
       boolean toComplete) {
-    if(jips == null || jips.isEmpty()) {
+    if (jips == null || jips.isEmpty()) {
       return new JobStatus[]{};
     }
     ArrayList<JobStatus> jobStatusList = new ArrayList<JobStatus>();
@@ -4085,8 +4380,8 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       JobStatus status = jip.getStatus();
       status.setStartTime(jip.getStartTime());
       status.setUsername(jip.getProfile().getUser());
-      if(toComplete) {
-        if(status.getRunState() == JobStatus.RUNNING || 
+      if (toComplete) {
+        if (status.getRunState() == JobStatus.RUNNING || 
             status.getRunState() == JobStatus.PREP) {
           jobStatusList.add(status);
         }
@@ -4108,20 +4403,22 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   @Override
   public void refreshServiceAcl() throws IOException {
     if (!conf.getBoolean(
-            ServiceAuthorizationManager.SERVICE_AUTHORIZATION_CONFIG, false)) {
+        CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
       throw new AuthorizationException("Service Level Authorization not enabled!");
     }
-    SecurityUtil.getPolicy().refresh();
+    this.interTrackerServer.refreshServiceAcl(conf, new MapReducePolicyProvider());
   }
 
   @Override
   public void refreshQueues() throws IOException{
     LOG.info("Refreshing queue information. requested by : " + 
-        UserGroupInformation.getCurrentUGI().getUserName());
-    this.queueManager.refreshQueues(new Configuration(this.conf),
-        taskScheduler.getQueueRefresher());
+             UserGroupInformation.getCurrentUser().getShortUserName());
+    synchronized (taskScheduler) {
+      queueManager.refreshQueues(new Configuration(this.conf), taskScheduler
+          .getQueueRefresher());
+    }
   }
-
+  
   private void initializeTaskMemoryRelatedConfig() {
     memSizeForMapSlotOnJT =
         JobConf.normalizeMemoryConfigValue(conf.getLong(
@@ -4172,13 +4469,19 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
             limitMaxMemForReduceTasks).append(")"));
   }
 
-   
   @Override
-  public void refreshUserToGroupsMappings(Configuration conf) throws IOException {
+  public void refreshSuperUserGroupsConfiguration() {
+    LOG.info("Refreshing superuser proxy groups mapping ");
+
+    ProxyUsers.refreshSuperUserGroupsConfiguration();
+  }
+
+  @Override
+  public void refreshUserToGroupsMappings() throws IOException {
     LOG.info("Refreshing all user-to-groups mappings. Requested by user: " + 
-             UserGroupInformation.getCurrentUGI().getUserName());
+             UserGroupInformation.getCurrentUser().getShortUserName());
     
-    SecurityUtil.getUserToGroupsMappingService(conf).refresh();
+    Groups.getUserToGroupsMappingService().refresh();
   }
   
   private boolean perTaskMemoryConfigurationSetOnJT() {
@@ -4197,18 +4500,20 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @param job
    * @throws IOException 
    */
-  private void checkMemoryRequirements(JobInProgress job)
+  void checkMemoryRequirements(JobInProgress job)
       throws IOException {
     if (!perTaskMemoryConfigurationSetOnJT()) {
-      LOG.debug("Per-Task memory configuration is not set on JT. "
-          + "Not checking the job for invalid memory requirements.");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Per-Task memory configuration is not set on JT. "
+                  + "Not checking the job for invalid memory requirements.");
+      }
       return;
     }
 
     boolean invalidJob = false;
     String msg = "";
-    long maxMemForMapTask = job.getJobConf().getMemoryForMapTask();
-    long maxMemForReduceTask = job.getJobConf().getMemoryForReduceTask();
+    long maxMemForMapTask = job.getMemoryForMapTask();
+    long maxMemForReduceTask = job.getMemoryForReduceTask();
 
     if (maxMemForMapTask == JobConf.DISABLED_MEMORY_LIMIT
         || maxMemForReduceTask == JobConf.DISABLED_MEMORY_LIMIT) {
@@ -4283,7 +4588,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     faultyTrackers.incrementFaults(hostName);
   }
 
-  JobTracker(JobConf conf, Clock clock, boolean ignoredForSimulation) 
+  JobTracker(final JobConf conf, Clock clock, boolean ignoredForSimulation) 
   throws IOException {
     this.clock = clock;
     this.conf = conf;
@@ -4292,6 +4597,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     if (fs == null) {
       fs = FileSystem.get(conf);
     }
+    this.localFs = FileSystem.getLocal(conf);
     
     tasktrackerExpiryInterval = 
       conf.getLong("mapred.tasktracker.expiry.interval", 10 * 60 * 1000);
@@ -4304,18 +4610,26 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     NUM_HEARTBEATS_IN_SECOND = 
         conf.getInt("mapred.heartbeats.in.second", 100);
     
-    try {
-      mrOwner = UnixUserGroupInformation.login(conf);
-    } catch (LoginException e) {
-      throw new IOException(StringUtils.stringifyException(e));
-    }
-    supergroup = conf.get("mapred.permissions.supergroup", "supergroup");
+    // Set ports, start RPC servers, setup security policy etc.
+    InetSocketAddress addr = getAddress(conf);
+    this.localMachine = addr.getHostName();
+    this.port = addr.getPort();
+    UserGroupInformation.setConfiguration(conf);
+    SecurityUtil.login(conf, JTConfig.JT_KEYTAB_FILE, JTConfig.JT_USER_NAME,
+        localMachine);
+    
+    secretManager = null;
     
     this.hostsReader = new HostsFileReader(conf.get("mapred.hosts", ""),
         conf.get("mapred.hosts.exclude", ""));
     // queue manager
-    Configuration queuesConf = new Configuration(this.conf);
-    queueManager = new QueueManager(queuesConf);
+    Configuration clusterConf = new Configuration(this.conf);
+    queueManager = new QueueManager(clusterConf);
+
+    aclsManager = new ACLsManager(conf, new JobACLsManager(conf), queueManager);
+
+    LOG.info("Starting jobtracker with owner as " +
+        getMROwner().getShortUserName());
 
     // Create the scheduler
     Class<? extends TaskScheduler> schedulerClass
@@ -4323,11 +4637,6 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
           JobQueueTaskScheduler.class, TaskScheduler.class);
     taskScheduler = 
       (TaskScheduler)ReflectionUtils.newInstance(schedulerClass, conf);
-    
-    // Set ports, start RPC servers, setup security policy etc.
-    InetSocketAddress addr = getAddress(conf);
-    this.localMachine = addr.getHostName();
-    this.port = addr.getPort();
 
     // Create the jetty server
     InetSocketAddress infoSocAddr = NetUtils.createSocketAddr(
@@ -4340,15 +4649,24 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     infoServer.setAttribute("job.tracker", this);
     
     // initialize history parameters.
-    String historyLogDir = null;
     FileSystem historyFS = null;
 
     jobHistory = new JobHistory();
-    jobHistory.init(this, conf, this.localMachine, this.startTime);
-    jobHistory.initDone(conf, fs);
-    historyLogDir = jobHistory.getCompletedJobHistoryLocation().toString();
-    infoServer.setAttribute("historyLogDir", historyLogDir);
-    historyFS = new Path(historyLogDir).getFileSystem(conf);
+    final JobTracker jtFinal = this;
+    try {
+      historyFS = getMROwner().doAs(new PrivilegedExceptionAction<FileSystem>() {
+        public FileSystem run() throws IOException {
+          jobHistory.init(jtFinal, conf, jtFinal.localMachine, jtFinal.startTime);
+          jobHistory.initDone(conf, fs);
+          final String historyLogDir = 
+            jobHistory.getCompletedJobHistoryLocation().toString();
+          infoServer.setAttribute("historyLogDir", historyLogDir);
+          return new Path(historyLogDir).getFileSystem(conf);
+        }
+      });
+    } catch (InterruptedException e1) {
+      throw (IOException) new IOException().initCause(e1);
+    }
 
     infoServer.setAttribute("fileSys", historyFS);
     infoServer.addServlet("reducegraph", "/taskgraph", TaskGraphServlet.class);
@@ -4381,9 +4699,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         NetworkTopology.DEFAULT_HOST_LEVEL);
 
     //initializes the job status store
-    completedJobStatusStore = new CompletedJobStatusStore(conf);
-    Path homeDir = fs.getHomeDirectory();
-    defaultStagingBaseDir = homeDir.getParent().toString();
+    completedJobStatusStore = new CompletedJobStatusStore(conf, aclsManager);
   }
 
   /**
@@ -4394,5 +4710,75 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
   String getLocalJobFilePath(org.apache.hadoop.mapreduce.JobID jobId){
     return System.getProperty("hadoop.log.dir") + 
            File.separator + jobId + "_conf.xml";
+  }
+
+  /**
+   * Discard a current delegation token.
+   */
+  @Override
+  public void cancelDelegationToken(Token<DelegationTokenIdentifier> token
+                                       ) throws IOException,
+                                                InterruptedException {
+    String user = UserGroupInformation.getCurrentUser().getUserName();
+    secretManager.cancelToken(token, user);
+  }
+
+  /**
+   * Get a new delegation token.
+   */
+  @Override
+  public Token<DelegationTokenIdentifier> 
+     getDelegationToken(Text renewer
+                        )throws IOException, InterruptedException {
+    if (!isAllowedDelegationTokenOp()) {
+      throw new IOException(
+          "Delegation Token can be issued only with kerberos authentication");
+    }
+    UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
+    Text owner = new Text(ugi.getUserName());
+    Text realUser = null;
+    if (ugi.getRealUser() != null) {
+      realUser = new Text(ugi.getRealUser().getUserName());
+    }
+    DelegationTokenIdentifier ident = 
+      new DelegationTokenIdentifier(owner, renewer, realUser);
+    return new Token<DelegationTokenIdentifier>(ident, secretManager);
+  }
+
+  /**
+   * Renew a delegation token to extend its lifetime.
+   */
+  @Override
+  public long renewDelegationToken(Token<DelegationTokenIdentifier> token
+                                      ) throws IOException,
+                                               InterruptedException {
+    if (!isAllowedDelegationTokenOp()) {
+      throw new IOException(
+          "Delegation Token can be renewed only with kerberos authentication");
+    }
+    String user = UserGroupInformation.getCurrentUser().getUserName();
+    return secretManager.renewToken(token, user);
+  }
+
+  JobACLsManager getJobACLsManager() {
+    return aclsManager.getJobACLsManager();
+  }
+
+  ACLsManager getACLsManager() {
+    return aclsManager;
+  }
+
+  /**
+   * 
+   * @return true if delegation token operation is allowed
+   */
+  private boolean isAllowedDelegationTokenOp() throws IOException {
+    AuthenticationMethod authMethod = UserGroupInformation
+        .getRealAuthenticationMethod(UserGroupInformation.getCurrentUser());
+    if (UserGroupInformation.isSecurityEnabled()
+        && (authMethod != AuthenticationMethod.KERBEROS)) {
+      return false;
+    }
+    return true;
   }
 }

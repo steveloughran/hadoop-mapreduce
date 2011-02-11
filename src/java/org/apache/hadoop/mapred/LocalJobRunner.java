@@ -22,16 +22,26 @@ import java.io.File;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Random;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueInfo;
@@ -42,32 +52,49 @@ import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.filecache.TaskDistributedCacheManager;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
-import org.apache.hadoop.mapreduce.security.TokenCache;
-import org.apache.hadoop.mapreduce.security.TokenStorage;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.State;
 import org.apache.hadoop.mapreduce.split.SplitMetaInfoReader;
 import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitMetaInfo;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.token.Token;
 
-/** Implements MapReduce locally, in-process, for debugging. */ 
+/** Implements MapReduce locally, in-process, for debugging. */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class LocalJobRunner implements ClientProtocol {
   public static final Log LOG =
     LogFactory.getLog(LocalJobRunner.class);
 
+  /** The maximum number of map tasks to run in parallel in LocalJobRunner */
+  public static final String LOCAL_MAX_MAPS =
+    "mapreduce.local.map.tasks.maximum";
+
   private FileSystem fs;
   private HashMap<JobID, Job> jobs = new HashMap<JobID, Job>();
   private JobConf conf;
-  private int map_tasks = 0;
+  private AtomicInteger map_tasks = new AtomicInteger(0);
   private int reduce_tasks = 0;
   final Random rand = new Random();
   
   private JobTrackerInstrumentation myMetrics = null;
 
   private static final String jobDir =  "localRunner/";
-  
+
+  private static final Counters EMPTY_COUNTERS = new Counters();
+
   public long getProtocolVersion(String protocol, long clientVersion) {
     return ClientProtocol.versionID;
+  }
+
+  @Override
+  public ProtocolSignature getProtocolSignature(String protocol,
+      long clientVersion, int clientMethodsHash) throws IOException {
+    return ProtocolSignature.getProtocolSignature(
+        this, protocol, clientVersion, clientMethodsHash);
   }
 
   private class Job extends Thread implements TaskUmbilicalProtocol {
@@ -83,8 +110,14 @@ public class LocalJobRunner implements ClientProtocol {
     private JobID id;
     private JobConf job;
 
+    private int numMapTasks;
+    private float [] partialMapProgress;
+    private Counters [] mapCounters;
+    private Counters reduceCounters;
+
     private JobStatus status;
-    private ArrayList<TaskAttemptID> mapIds = new ArrayList<TaskAttemptID>();
+    private List<TaskAttemptID> mapIds = Collections.synchronizedList(
+        new ArrayList<TaskAttemptID>());
 
     private JobProfile profile;
     private FileSystem localFs;
@@ -92,18 +125,18 @@ public class LocalJobRunner implements ClientProtocol {
     
     private TrackerDistributedCacheManager trackerDistributerdCacheManager;
     private TaskDistributedCacheManager taskDistributedCacheManager;
-    
-    // Counters summed over all the map/reduce tasks which
-    // have successfully completed
-    private Counters completedTaskCounters = new Counters();
-    
-    // Current counters, including incomplete task(s)
-    private Counters currentCounters = new Counters();
 
     public long getProtocolVersion(String protocol, long clientVersion) {
       return TaskUmbilicalProtocol.versionID;
     }
     
+    @Override
+    public ProtocolSignature getProtocolSignature(String protocol,
+        long clientVersion, int clientMethodsHash) throws IOException {
+      return ProtocolSignature.getProtocolSignature(
+          this, protocol, clientVersion, clientMethodsHash);
+    }
+
     public Job(JobID jobid, String jobSubmitDir) throws IOException {
       this.systemJobDir = new Path(jobSubmitDir);
       this.systemJobFile = new Path(systemJobDir, "job.xml");
@@ -147,7 +180,7 @@ public class LocalJobRunner implements ClientProtocol {
         out.close();
       }
       this.job = new JobConf(localJobFile);
-      
+
       // Job (the current object) is a Thread, so we wrap its class loader.
       if (!taskDistributedCacheManager.getClassPaths().isEmpty()) {
         setContextClassLoader(taskDistributedCacheManager.makeClassLoader(
@@ -168,18 +201,147 @@ public class LocalJobRunner implements ClientProtocol {
     JobProfile getProfile() {
       return profile;
     }
-    
+
+    /**
+     * A Runnable instance that handles a map task to be run by an executor.
+     */
+    protected class MapTaskRunnable implements Runnable {
+      private final int taskId;
+      private final TaskSplitMetaInfo info;
+      private final JobID jobId;
+      private final JobConf localConf;
+
+      // This is a reference to a shared object passed in by the
+      // external context; this delivers state to the reducers regarding
+      // where to fetch mapper outputs.
+      private final Map<TaskAttemptID, MapOutputFile> mapOutputFiles;
+
+      public volatile Throwable storedException;
+
+      public MapTaskRunnable(TaskSplitMetaInfo info, int taskId, JobID jobId,
+          Map<TaskAttemptID, MapOutputFile> mapOutputFiles) {
+        this.info = info;
+        this.taskId = taskId;
+        this.mapOutputFiles = mapOutputFiles;
+        this.jobId = jobId;
+        this.localConf = new JobConf(job);
+      }
+
+      public void run() {
+        try {
+          TaskAttemptID mapId = new TaskAttemptID(new TaskID(
+              jobId, TaskType.MAP, taskId), 0);
+          LOG.info("Starting task: " + mapId);
+          mapIds.add(mapId);
+          MapTask map = new MapTask(systemJobFile.toString(), mapId, taskId,
+            info.getSplitIndex(), 1);
+          map.setUser(UserGroupInformation.getCurrentUser().
+              getShortUserName());
+          TaskRunner.setupChildMapredLocalDirs(map, localConf);
+
+          MapOutputFile mapOutput = new MapOutputFile();
+          mapOutput.setConf(localConf);
+          mapOutputFiles.put(mapId, mapOutput);
+
+          map.setJobFile(localJobFile.toString());
+          localConf.setUser(map.getUser());
+          map.localizeConfiguration(localConf);
+          map.setConf(localConf);
+          try {
+            map_tasks.getAndIncrement();
+            myMetrics.launchMap(mapId);
+            map.run(localConf, Job.this);
+            myMetrics.completeMap(mapId);
+          } finally {
+            map_tasks.getAndDecrement();
+          }
+
+          LOG.info("Finishing task: " + mapId);
+        } catch (Throwable e) {
+          this.storedException = e;
+        }
+      }
+    }
+
+    /**
+     * Create Runnables to encapsulate map tasks for use by the executor
+     * service.
+     * @param taskInfo Info about the map task splits
+     * @param jobId the job id
+     * @param mapOutputFiles a mapping from task attempts to output files
+     * @return a List of Runnables, one per map task.
+     */
+    protected List<MapTaskRunnable> getMapTaskRunnables(
+        TaskSplitMetaInfo [] taskInfo, JobID jobId,
+        Map<TaskAttemptID, MapOutputFile> mapOutputFiles) {
+
+      int numTasks = 0;
+      ArrayList<MapTaskRunnable> list = new ArrayList<MapTaskRunnable>();
+      for (TaskSplitMetaInfo task : taskInfo) {
+        list.add(new MapTaskRunnable(task, numTasks++, jobId,
+            mapOutputFiles));
+      }
+
+      return list;
+    }
+
+    /**
+     * Initialize the counters that will hold partial-progress from
+     * the various task attempts.
+     * @param numMaps the number of map tasks in this job.
+     */
+    private synchronized void initCounters(int numMaps) {
+      // Initialize state trackers for all map tasks.
+      this.partialMapProgress = new float[numMaps];
+      this.mapCounters = new Counters[numMaps];
+      for (int i = 0; i < numMaps; i++) {
+        this.mapCounters[i] = EMPTY_COUNTERS;
+      }
+
+      this.reduceCounters = EMPTY_COUNTERS;
+    }
+
+    /**
+     * Creates the executor service used to run map tasks.
+     *
+     * @param numMapTasks the total number of map tasks to be run
+     * @return an ExecutorService instance that handles map tasks
+     */
+    protected ExecutorService createMapExecutor(int numMapTasks) {
+
+      // Determine the size of the thread pool to use
+      int maxMapThreads = job.getInt(LOCAL_MAX_MAPS, 1);
+      if (maxMapThreads < 1) {
+        throw new IllegalArgumentException(
+            "Configured " + LOCAL_MAX_MAPS + " must be >= 1");
+      }
+      this.numMapTasks = numMapTasks;
+      maxMapThreads = Math.min(maxMapThreads, this.numMapTasks);
+      maxMapThreads = Math.max(maxMapThreads, 1); // In case of no tasks.
+
+      initCounters(this.numMapTasks);
+
+      LOG.debug("Starting thread pool executor.");
+      LOG.debug("Max local threads: " + maxMapThreads);
+      LOG.debug("Map tasks to process: " + this.numMapTasks);
+
+      // Create a new executor service to drain the work queue.
+      ExecutorService executor = Executors.newFixedThreadPool(maxMapThreads);
+
+      return executor;
+    }
+
     @SuppressWarnings("unchecked")
     @Override
     public void run() {
       JobID jobId = profile.getJobID();
       JobContext jContext = new JobContextImpl(job, jobId);
       OutputCommitter outputCommitter = job.getOutputCommitter();
+
       try {
         TaskSplitMetaInfo[] taskSplitMetaInfos = 
           SplitMetaInfoReader.readSplitMetaInfo(jobId, localFs, conf, systemJobDir);
-        
-    
+
         int numReduceTasks = job.getNumReduceTasks();
         if (numReduceTasks > 1 || numReduceTasks < 0) {
           // we only allow 0 or 1 reducer in local mode
@@ -190,42 +352,51 @@ public class LocalJobRunner implements ClientProtocol {
         status.setSetupProgress(1.0f);
 
         Map<TaskAttemptID, MapOutputFile> mapOutputFiles =
-            new HashMap<TaskAttemptID, MapOutputFile>();
-        for (int i = 0; i < taskSplitMetaInfos.length; i++) {
-          if (!this.isInterrupted()) {
-            TaskAttemptID mapId = new TaskAttemptID(
-                new TaskID(jobId, TaskType.MAP, i),0);  
-            mapIds.add(mapId);
-            MapTask map = new MapTask(systemJobFile.toString(),  
-                                      mapId, i,
-                                      taskSplitMetaInfos[i].getSplitIndex(), 1);
-            JobConf localConf = new JobConf(job);
-            TaskRunner.setupChildMapredLocalDirs(map, localConf);
+            Collections.synchronizedMap(new HashMap<TaskAttemptID, MapOutputFile>());
 
-            MapOutputFile mapOutput = new MapOutputFile();
-            mapOutput.setConf(localConf);
-            mapOutputFiles.put(mapId, mapOutput);
+        List<MapTaskRunnable> taskRunnables = getMapTaskRunnables(taskSplitMetaInfos,
+            jobId, mapOutputFiles);
+        ExecutorService mapService = createMapExecutor(taskRunnables.size());
 
-            map.setJobFile(localJobFile.toString());
-            map.localizeConfiguration(localConf);
-            map.setConf(localConf);
-            map_tasks += 1;
-            myMetrics.launchMap(mapId);
-            map.run(localConf, this);
-            myMetrics.completeMap(mapId);
-            map_tasks -= 1;
-            updateCounters(map);
-          } else {
-            throw new InterruptedException();
+        // Start populating the executor with work units.
+        // They may begin running immediately (in other threads).
+        for (Runnable r : taskRunnables) {
+          mapService.submit(r);
+        }
+
+        try {
+          mapService.shutdown(); // Instructs queue to drain.
+
+          // Wait for tasks to finish; do not use a time-based timeout.
+          // (See http://bugs.sun.com/bugdatabase/view_bug.do?bug_id=6179024)
+          LOG.info("Waiting for map tasks");
+          mapService.awaitTermination(Long.MAX_VALUE, TimeUnit.NANOSECONDS);
+        } catch (InterruptedException ie) {
+          // Cancel all threads.
+          mapService.shutdownNow();
+          throw ie;
+        }
+
+        LOG.info("Map task executor complete.");
+
+        // After waiting for the map tasks to complete, if any of these
+        // have thrown an exception, rethrow it now in the main thread context.
+        for (MapTaskRunnable r : taskRunnables) {
+          if (r.storedException != null) {
+            throw new Exception(r.storedException);
           }
         }
-        TaskAttemptID reduceId = 
+
+        TaskAttemptID reduceId =
           new TaskAttemptID(new TaskID(jobId, TaskType.REDUCE, 0), 0);
         try {
           if (numReduceTasks > 0) {
             ReduceTask reduce = new ReduceTask(systemJobFile.toString(), 
                 reduceId, 0, mapIds.size(), 1);
+            reduce.setUser(UserGroupInformation.getCurrentUser().
+                getShortUserName());
             JobConf localConf = new JobConf(job);
+            localConf.set("mapreduce.jobtracker.address", "local");
             TaskRunner.setupChildMapredLocalDirs(reduce, localConf);
             // move map output to reduce input  
             for (int i = 0; i < mapIds.size(); i++) {
@@ -249,6 +420,7 @@ public class LocalJobRunner implements ClientProtocol {
             }
             if (!this.isInterrupted()) {
               reduce.setJobFile(localJobFile.toString());
+              localConf.setUser(reduce.getUser());
               reduce.localizeConfiguration(localConf);
               reduce.setConf(localConf);
               reduce_tasks += 1;
@@ -256,7 +428,6 @@ public class LocalJobRunner implements ClientProtocol {
               reduce.run(localConf, this);
               myMetrics.completeReduce(reduce.getTaskID());
               reduce_tasks -= 1;
-              updateCounters(reduce);
             } else {
               throw new InterruptedException();
             }
@@ -312,21 +483,45 @@ public class LocalJobRunner implements ClientProtocol {
 
     public JvmTask getTask(JvmContext context) { return null; }
     
-    public boolean statusUpdate(TaskAttemptID taskId, TaskStatus taskStatus) 
-    throws IOException, InterruptedException {
+    public synchronized boolean statusUpdate(TaskAttemptID taskId,
+        TaskStatus taskStatus) throws IOException, InterruptedException {
       LOG.info(taskStatus.getStateString());
-      float taskIndex = mapIds.indexOf(taskId);
+      int taskIndex = mapIds.indexOf(taskId);
       if (taskIndex >= 0) {                       // mapping
-        float numTasks = mapIds.size();
-        status.setMapProgress(taskIndex/numTasks + taskStatus.getProgress()/numTasks);
+        float numTasks = (float) this.numMapTasks;
+
+        partialMapProgress[taskIndex] = taskStatus.getProgress();
+        mapCounters[taskIndex] = taskStatus.getCounters();
+
+        float partialProgress = 0.0f;
+        for (float f : partialMapProgress) {
+          partialProgress += f;
+        }
+        status.setMapProgress(partialProgress / numTasks);
       } else {
+        reduceCounters = taskStatus.getCounters();
         status.setReduceProgress(taskStatus.getProgress());
       }
-      currentCounters = Counters.sum(completedTaskCounters, taskStatus.getCounters());
-      
+
       // ignore phase
-      
       return true;
+    }
+
+    /** Return the current values of the counters for this job,
+     * including tasks that are in progress.
+     */
+    public synchronized Counters getCurrentCounters() {
+      if (null == mapCounters) {
+        // Counters not yet initialized for job.
+        return EMPTY_COUNTERS;
+      }
+
+      Counters current = EMPTY_COUNTERS;
+      for (Counters c : mapCounters) {
+        current = Counters.sum(current, c);
+      }
+      current = Counters.sum(current, reduceCounters);
+      return current;
     }
 
     /**
@@ -337,15 +532,6 @@ public class LocalJobRunner implements ClientProtocol {
                               TaskStatus taskStatus) 
     throws IOException, InterruptedException {
       statusUpdate(taskid, taskStatus);
-    }
-
-    /**
-     * Updates counters corresponding to completed tasks.
-     * @param task A map or reduce task which has just been 
-     * successfully completed
-     */ 
-    private void updateCounters(Task task) {
-      completedTaskCounters.incrAllCounters(task.getCounters());
     }
 
     public void reportDiagnosticInfo(TaskAttemptID taskid, String trace) {
@@ -416,15 +602,17 @@ public class LocalJobRunner implements ClientProtocol {
   }
 
   public org.apache.hadoop.mapreduce.JobStatus submitJob(
-      org.apache.hadoop.mapreduce.JobID jobid, String jobSubmitDir, TokenStorage ts) 
-      throws IOException {
-    TokenCache.setTokenStorage(ts);
-    return new Job(JobID.downgrade(jobid), jobSubmitDir).status;
+      org.apache.hadoop.mapreduce.JobID jobid, String jobSubmitDir,
+      Credentials credentials) throws IOException {
+    Job job = new Job(JobID.downgrade(jobid), jobSubmitDir);
+    job.job.setCredentials(credentials);
+    return job.status;
+
   }
 
   public void killJob(org.apache.hadoop.mapreduce.JobID id) {
-    jobs.get(id).killed = true;
-    jobs.get(id).interrupt();
+    jobs.get(JobID.downgrade(id)).killed = true;
+    jobs.get(JobID.downgrade(id)).interrupt();
   }
 
   public void setJobPriority(org.apache.hadoop.mapreduce.JobID id,
@@ -457,7 +645,8 @@ public class LocalJobRunner implements ClientProtocol {
   public org.apache.hadoop.mapreduce.Counters getJobCounters(
       org.apache.hadoop.mapreduce.JobID id) {
     Job job = jobs.get(JobID.downgrade(id));
-    return new org.apache.hadoop.mapreduce.Counters(job.currentCounters);
+
+    return new org.apache.hadoop.mapreduce.Counters(job.getCurrentCounters());
   }
 
   public String getFilesystemName() throws IOException {
@@ -465,8 +654,9 @@ public class LocalJobRunner implements ClientProtocol {
   }
   
   public ClusterMetrics getClusterMetrics() {
-    return new ClusterMetrics(map_tasks, reduce_tasks, map_tasks, reduce_tasks,
-      0, 0, 1, 1, jobs.size(), 1, 0, 0);
+    int numMapTasks = map_tasks.get();
+    return new ClusterMetrics(numMapTasks, reduce_tasks, numMapTasks,
+        reduce_tasks, 0, 0, 1, 1, jobs.size(), 1, 0, 0);
   }
 
   public State getJobTrackerState() throws IOException, InterruptedException {
@@ -523,15 +713,22 @@ public class LocalJobRunner implements ClientProtocol {
   }
 
   /**
+   * @see org.apache.hadoop.mapred.JobSubmissionProtocol#getQueueAdmins()
+   */
+  public AccessControlList getQueueAdmins(String queueName) throws IOException {
+	  return new AccessControlList(" ");// no queue admins for local job runner
+  }
+
+  /**
    * @see org.apache.hadoop.mapreduce.protocol.ClientProtocol#getStagingAreaDir()
    */
-  public String getStagingAreaDir() {
+  public String getStagingAreaDir() throws IOException {
     Path stagingRootDir = new Path(conf.get(JTConfig.JT_STAGING_AREA_ROOT, 
         "/tmp/hadoop/mapred/staging"));
-    UserGroupInformation ugi = UserGroupInformation.getCurrentUGI();
+    UserGroupInformation ugi = UserGroupInformation.getCurrentUser();
     String user;
     if (ugi != null) {
-      user = ugi.getUserName() + rand.nextInt();
+      user = ugi.getShortUserName() + rand.nextInt();
     } else {
       user = "dummy" + rand.nextInt();
     }
@@ -567,5 +764,43 @@ public class LocalJobRunner implements ClientProtocol {
   public org.apache.hadoop.mapreduce.QueueAclsInfo[] 
       getQueueAclsForCurrentUser() throws IOException{
     return null;
+  }
+
+  /**
+   * Set the max number of map tasks to run concurrently in the LocalJobRunner.
+   * @param job the job to configure
+   * @param maxMaps the maximum number of map tasks to allow.
+   */
+  public static void setLocalMaxRunningMaps(
+      org.apache.hadoop.mapreduce.JobContext job,
+      int maxMaps) {
+    job.getConfiguration().setInt(LOCAL_MAX_MAPS, maxMaps);
+  }
+
+  /**
+   * @return the max number of map tasks to run concurrently in the
+   * LocalJobRunner.
+   */
+  public static int getLocalMaxRunningMaps(
+      org.apache.hadoop.mapreduce.JobContext job) {
+    return job.getConfiguration().getInt(LOCAL_MAX_MAPS, 1);
+  }
+
+  @Override
+  public void cancelDelegationToken(Token<DelegationTokenIdentifier> token
+                                       ) throws IOException,
+                                                InterruptedException {
+  }
+
+  @Override
+  public Token<DelegationTokenIdentifier> 
+     getDelegationToken(Text renewer) throws IOException, InterruptedException {
+    return null;
+  }
+
+  @Override
+  public long renewDelegationToken(Token<DelegationTokenIdentifier> token
+                                      ) throws IOException,InterruptedException{
+    return 0;
   }
 }

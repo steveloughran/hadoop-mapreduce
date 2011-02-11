@@ -27,11 +27,15 @@ import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapred.TaskTrackerStatus;
 
 /**
  * Plugin to calculate resource information on Linux systems.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class LinuxResourceCalculatorPlugin extends ResourceCalculatorPlugin {
   private static final Log LOG =
       LogFactory.getLog(LinuxResourceCalculatorPlugin.class);
@@ -86,6 +90,7 @@ public class LinuxResourceCalculatorPlugin extends ResourceCalculatorPlugin {
   private float cpuUsage = TaskTrackerStatus.UNAVAILABLE;
   private long sampleTime = TaskTrackerStatus.UNAVAILABLE;
   private long lastSampleTime = TaskTrackerStatus.UNAVAILABLE;
+  private ProcfsBasedProcessTree pTree = null;
 
   boolean readMemInfoFile = false;
   boolean readCpuInfoFile = false;
@@ -103,7 +108,8 @@ public class LinuxResourceCalculatorPlugin extends ResourceCalculatorPlugin {
     procfsCpuFile = PROCFS_CPUINFO;
     procfsStatFile = PROCFS_STAT;
     jiffyLengthInMillis = ProcfsBasedProcessTree.JIFFY_LENGTH_IN_MILLIS;
-    
+    String pid = System.getenv().get("JVM_PID");
+    pTree = new ProcfsBasedProcessTree(pid);
   }
   
   /**
@@ -122,6 +128,8 @@ public class LinuxResourceCalculatorPlugin extends ResourceCalculatorPlugin {
     this.procfsCpuFile = procfsCpuFile;
     this.procfsStatFile = procfsStatFile;
     this.jiffyLengthInMillis = jiffyLengthInMillis;
+    String pid = System.getenv().get("JVM_PID");
+    pTree = new ProcfsBasedProcessTree(pid);
   }
 
   /**
@@ -390,5 +398,14 @@ public class LinuxResourceCalculatorPlugin extends ResourceCalculatorPlugin {
       // do nothing
     }
     System.out.println("CPU usage % : " + plugin.getCpuUsage());
+  }
+
+  @Override
+  public ProcResourceValues getProcResourceValues() {
+    pTree = pTree.getProcessTree();
+    long cpuTime = pTree.getCumulativeCpuTime();
+    long pMem = pTree.getCumulativeRssmem();
+    long vMem = pTree.getCumulativeVmem();
+    return new ProcResourceValues(cpuTime, pMem, vMem);
   }
 }

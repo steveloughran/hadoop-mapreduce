@@ -23,12 +23,17 @@ import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.List;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 /**
  * Implement DBSplitter over integer values.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class IntegerSplitter implements DBSplitter {
   public List<InputSplit> split(Configuration conf, ResultSet results, String colName)
       throws SQLException {
@@ -39,7 +44,7 @@ public class IntegerSplitter implements DBSplitter {
     String lowClausePrefix = colName + " >= ";
     String highClausePrefix = colName + " < ";
 
-    int numSplits = conf.getInt("mapred.map.tasks", 1);
+    int numSplits = conf.getInt(MRJobConfig.NUM_MAPS, 1);
     if (numSplits < 1) {
       numSplits = 1;
     }

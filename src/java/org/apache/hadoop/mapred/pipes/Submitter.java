@@ -37,9 +37,11 @@ import org.apache.commons.cli.ParseException;
 import org.apache.commons.cli.Parser;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -64,6 +66,8 @@ import org.apache.hadoop.util.Tool;
  * The main entry point and job submitter. It may either be used as a command
  * line-based or API-based method to launch Pipes jobs.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class Submitter extends Configured implements Tool {
 
   protected static final Log LOG = LogFactory.getLog(Submitter.class);
@@ -290,10 +294,10 @@ public class Submitter extends Configured implements Tool {
       }
     }
     String textClassname = Text.class.getName();
-    setIfUnset(conf, JobContext.MAP_OUTPUT_KEY_CLASS, textClassname);
-    setIfUnset(conf, JobContext.MAP_OUTPUT_VALUE_CLASS, textClassname);
-    setIfUnset(conf, JobContext.OUTPUT_KEY_CLASS, textClassname);
-    setIfUnset(conf, JobContext.OUTPUT_VALUE_CLASS, textClassname);
+    setIfUnset(conf, MRJobConfig.MAP_OUTPUT_KEY_CLASS, textClassname);
+    setIfUnset(conf, MRJobConfig.MAP_OUTPUT_VALUE_CLASS, textClassname);
+    setIfUnset(conf, MRJobConfig.OUTPUT_KEY_CLASS, textClassname);
+    setIfUnset(conf, MRJobConfig.OUTPUT_VALUE_CLASS, textClassname);
     
     // Use PipesNonJavaInputFormat if necessary to handle progress reporting
     // from C++ RecordReaders ...
@@ -313,8 +317,8 @@ public class Submitter extends Configured implements Tool {
       DistributedCache.createSymlink(conf);
       // set default gdb commands for map and reduce task 
       String defScript = "$HADOOP_HOME/src/c++/pipes/debug/pipes-default-script";
-      setIfUnset(conf, JobContext.MAP_DEBUG_SCRIPT,defScript);
-      setIfUnset(conf, JobContext.REDUCE_DEBUG_SCRIPT,defScript);
+      setIfUnset(conf, MRJobConfig.MAP_DEBUG_SCRIPT,defScript);
+      setIfUnset(conf, MRJobConfig.REDUCE_DEBUG_SCRIPT,defScript);
     }
     URI[] fileCache = DistributedCache.getCacheFiles(conf);
     if (fileCache == null) {

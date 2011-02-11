@@ -19,15 +19,21 @@ package org.apache.hadoop.mapred;
 
 import java.io.IOException;
 import java.io.PrintWriter;
-
 import javax.servlet.ServletException;
 import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.mapred.JSPUtil.JobWithViewAccessCheck;
+import org.apache.hadoop.security.UserGroupInformation;
+
 /** The servlet that outputs svg graphics for map / reduce task
  *  statuses
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class TaskGraphServlet extends HttpServlet {
 
   private static final long serialVersionUID = -1365683739392460020L;
@@ -52,13 +58,20 @@ public class TaskGraphServlet extends HttpServlet {
 
     response.setContentType("image/svg+xml");
 
-    JobTracker tracker = 
+    final JobTracker tracker = 
       (JobTracker) getServletContext().getAttribute("job.tracker");
     
     String jobIdStr = request.getParameter("jobid");
     if(jobIdStr == null)
       return;
-    JobID jobId = JobID.forName(jobIdStr);
+    final JobID jobId = JobID.forName(jobIdStr);
+
+    // verify if user has view access for this job
+    JobWithViewAccessCheck myJob = JSPUtil.checkAccessAndGetJob(
+        tracker, jobId, request, response);
+    if (!myJob.isViewJobAllowed()) {
+      return;// user is not authorized to view this job
+    }
 
     final boolean isMap = "map".equalsIgnoreCase(request.getParameter("type"));
     final TaskReport[] reports = isMap? tracker.getMapTaskReports(jobId) 

@@ -21,6 +21,8 @@ package org.apache.hadoop.mapreduce.lib.map;
 import java.io.IOException;
 import java.net.URI;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.Path;
@@ -36,11 +38,14 @@ import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.security.Credentials;
 
 /**
  * A {@link Mapper} which wraps a given one to allow custom 
  * {@link Mapper.Context} implementations.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT> 
     extends Mapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT> {
   
@@ -54,6 +59,7 @@ public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     return new Context(mapContext);
   }
   
+  @InterfaceStability.Evolving
   public class Context 
       extends Mapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>.Context {
 
@@ -300,6 +306,11 @@ public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     @Override
     public String getUser() {
       return mapContext.getUser();
+    }
+
+    @Override
+    public Credentials getCredentials() {
+      return mapContext.getCredentials();
     }
   }
 }

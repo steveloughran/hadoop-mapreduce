@@ -28,6 +28,11 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.fs.permission.FsAction;
+import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.util.DiskChecker.DiskErrorException;
 
 /**
  * Persists and retrieves the Job info of a job into/from DFS.
@@ -46,19 +51,25 @@ class CompletedJobStatusStore implements Runnable {
   private FileSystem fs;
   private static final String JOB_INFO_STORE_DIR = "/jobtracker/jobsInfo";
 
+  private ACLsManager aclsManager;
+
   public static final Log LOG =
           LogFactory.getLog(CompletedJobStatusStore.class);
 
   private static long HOUR = 1000 * 60 * 60;
   private static long SLEEP_TIME = 1 * HOUR;
+  final static FsPermission JOB_STATUS_STORE_DIR_PERMISSION = FsPermission
+      .createImmutable((short) 0750); // rwxr-x--
 
-  CompletedJobStatusStore(Configuration conf) throws IOException {
+
+  CompletedJobStatusStore(Configuration conf, ACLsManager aclsManager)
+      throws IOException {
     active =
-      conf.getBoolean(JTConfig.JT_PERSIST_JOBSTATUS, false);
+      conf.getBoolean(JTConfig.JT_PERSIST_JOBSTATUS, true);
 
     if (active) {
       retainTime =
-        conf.getInt(JTConfig.JT_PERSIST_JOBSTATUS_HOURS, 0) * HOUR;
+        conf.getInt(JTConfig.JT_PERSIST_JOBSTATUS_HOURS, 1) * HOUR;
 
       jobInfoDir =
         conf.get(JTConfig.JT_PERSIST_JOBSTATUS_DIR, JOB_INFO_STORE_DIR);
@@ -68,13 +79,33 @@ class CompletedJobStatusStore implements Runnable {
       // set the fs
       this.fs = path.getFileSystem(conf);
       if (!fs.exists(path)) {
-        fs.mkdirs(path);
+        if (!fs.mkdirs(path, new FsPermission(JOB_STATUS_STORE_DIR_PERMISSION))) {
+          throw new IOException(
+              "CompletedJobStatusStore mkdirs failed to create "
+                  + path.toString());
+        }
+      } else {
+        FileStatus stat = fs.getFileStatus(path);
+        FsPermission actual = stat.getPermission();
+        if (!stat.isDir())
+          throw new DiskErrorException("not a directory: " 
+                                   + path.toString());
+        FsAction user = actual.getUserAction();
+        if (!user.implies(FsAction.READ))
+          throw new DiskErrorException("directory is not readable: "
+                                   + path.toString());
+        if (!user.implies(FsAction.WRITE))
+          throw new DiskErrorException("directory is not writable: "
+                                   + path.toString());
       }
 
       if (retainTime == 0) {
         // as retain time is zero, all stored jobstatuses are deleted.
         deleteJobStatusDirs();
       }
+
+      this.aclsManager = aclsManager;
+
       LOG.info("Completed job store activated/configured with retain-time : " 
                + retainTime + " , job-info-dir : " + jobInfoDir);
     } else {
@@ -270,23 +301,32 @@ class CompletedJobStatusStore implements Runnable {
   }
 
   /**
-   * This method retrieves Counters information from DFS stored using
+   * This method retrieves Counters information from file stored using
    * store method.
    *
    * @param jobId the jobId for which Counters is queried
    * @return Counters object, null if not able to retrieve
+   * @throws AccessControlException 
    */
-  public Counters readCounters(JobID jobId) {
+  public Counters readCounters(JobID jobId) throws AccessControlException {
     Counters counters = null;
     if (active) {
       try {
         FSDataInputStream dataIn = getJobInfoFile(jobId);
         if (dataIn != null) {
-          readJobStatus(dataIn);
-          readJobProfile(dataIn);
+          JobStatus jobStatus = readJobStatus(dataIn);
+          JobProfile profile = readJobProfile(dataIn);
+          String queue = profile.getQueueName();
+          // authorize the user for job view access
+          aclsManager.checkAccess(jobStatus,
+              UserGroupInformation.getCurrentUser(), queue,
+              Operation.VIEW_JOB_COUNTERS);
+
           counters = readCounters(dataIn);
           dataIn.close();
         }
+      } catch (AccessControlException ace) {
+        throw ace;
       } catch (IOException ex) {
         LOG.warn("Could not read [" + jobId + "] job counters : " + ex, ex);
       }

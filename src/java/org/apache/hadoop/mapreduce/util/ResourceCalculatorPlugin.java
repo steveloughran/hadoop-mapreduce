@@ -18,6 +18,8 @@
 
 package org.apache.hadoop.mapreduce.util;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -26,6 +28,8 @@ import org.apache.hadoop.util.ReflectionUtils;
  * Plugin to calculate resource information on the system.
  * 
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public abstract class ResourceCalculatorPlugin extends Configured {
 
   /**
@@ -85,6 +89,48 @@ public abstract class ResourceCalculatorPlugin extends Configured {
    * @return CPU usage in %
    */
   public abstract float getCpuUsage();
+
+  /**
+   * Obtain resource status used by current process tree.
+   */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
+  public abstract ProcResourceValues getProcResourceValues();
+
+  public class ProcResourceValues {
+    private final long cumulativeCpuTime;
+    private final long physicalMemorySize;
+    private final long virtualMemorySize;
+    public ProcResourceValues(long cumulativeCpuTime, long physicalMemorySize,
+                              long virtualMemorySize) {
+      this.cumulativeCpuTime = cumulativeCpuTime;
+      this.physicalMemorySize = physicalMemorySize;
+      this.virtualMemorySize = virtualMemorySize;
+    }
+    /**
+     * Obtain the physical memory size used by current process tree.
+     * @return physical memory size in bytes.
+     */
+    public long getPhysicalMemorySize() {
+      return physicalMemorySize;
+    }
+
+    /**
+     * Obtain the virtual memory size used by a current process tree.
+     * @return virtual memory size in bytes.
+     */
+    public long getVirtualMemorySize() {
+      return virtualMemorySize;
+    }
+
+    /**
+     * Obtain the cumulative CPU time used by a current process tree.
+     * @return cumulative CPU time in milliseconds
+     */
+    public long getCumulativeCpuTime() {
+      return cumulativeCpuTime;
+    }
+  }
 
   /**
    * Get the ResourceCalculatorPlugin from the class name and configure it. If

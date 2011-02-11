@@ -21,23 +21,30 @@ package org.apache.hadoop.mapred;
 import java.io.DataInput;
 import java.io.DataOutput;
 import java.io.IOException;
+import java.lang.management.GarbageCollectorMXBean;
+import java.lang.management.ManagementFactory;
 import java.text.NumberFormat;
 import java.util.HashMap;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.NoSuchElementException;
 import java.util.concurrent.atomic.AtomicBoolean;
+
 
 import javax.crypto.SecretKey;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configurable;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem.Statistics;
+import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.Text;
@@ -46,31 +53,33 @@ import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.io.serializer.Deserializer;
 import org.apache.hadoop.io.serializer.SerializationFactory;
 import org.apache.hadoop.mapred.IFile.Writer;
+import org.apache.hadoop.mapreduce.Counter;
+import org.apache.hadoop.mapreduce.OutputCommitter;
 import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.JobStatus;
 import org.apache.hadoop.mapreduce.MRConfig;
-import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.lib.reduce.WrappedReducer;
 import org.apache.hadoop.mapreduce.task.ReduceContextImpl;
+import org.apache.hadoop.mapreduce.util.ResourceCalculatorPlugin;
+import org.apache.hadoop.mapreduce.util.ResourceCalculatorPlugin.*;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.util.Progress;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.StringUtils;
-import org.apache.hadoop.fs.FSDataInputStream;
 
-/** 
+/**
  * Base class for tasks.
- * 
- * This is NOT a public interface.
  */
+@InterfaceAudience.LimitedPrivate({"MapReduce"})
+@InterfaceStability.Unstable
 abstract public class Task implements Writable, Configurable {
   private static final Log LOG =
     LogFactory.getLog(Task.class);
 
   public static String MERGED_OUTPUT_PREFIX = ".merged";
-  
 
   /**
    * Counters to measure the usage of the different file systems.
@@ -116,6 +125,11 @@ abstract public class Task implements Writable, Configurable {
   protected boolean jobCleanup = false;
   protected boolean jobSetup = false;
   protected boolean taskCleanup = false;
+ 
+  // An opaque data field used to attach extra data to each task. This is used
+  // by the Hadoop scheduler for Mesos to associate a Mesos task ID with each
+  // task and recover these IDs on the TaskTracker.
+  protected BytesWritable extraData = new BytesWritable(); 
   
   //skip ranges based on failed ranges from previous attempts
   private SortedRanges skipRanges = new SortedRanges();
@@ -126,7 +140,10 @@ abstract public class Task implements Writable, Configurable {
   private volatile long currentRecStartIndex; 
   private Iterator<Long> currentRecIndexIterator = 
     skipRanges.skipRangeIterator();
-  
+
+  private ResourceCalculatorPlugin resourceCalculator = null;
+  private long initCpuCumulativeTime = 0;
+
   protected JobConf conf;
   protected MapOutputFile mapOutputFile = new MapOutputFile();
   protected LocalDirAllocator lDirAlloc;
@@ -141,6 +158,7 @@ abstract public class Task implements Writable, Configurable {
   private int numSlotsRequired;
   protected TaskUmbilicalProtocol umbilical;
   protected SecretKey tokenSecret;
+  protected GcTimeUpdater gcUpdater;
 
   ////////////////////////////////////////////
   // Constructors
@@ -155,6 +173,7 @@ abstract public class Task implements Writable, Configurable {
       counters.findCounter(TaskCounter.FAILED_SHUFFLE);
     mergedMapOutputsCounter = 
       counters.findCounter(TaskCounter.MERGED_MAP_OUTPUTS);
+    gcUpdater = new GcTimeUpdater();
   }
 
   public Task(String jobFile, TaskAttemptID taskId, int partition, 
@@ -176,6 +195,7 @@ abstract public class Task implements Writable, Configurable {
     failedShuffleCounter = counters.findCounter(TaskCounter.FAILED_SHUFFLE);
     mergedMapOutputsCounter = 
       counters.findCounter(TaskCounter.MERGED_MAP_OUTPUTS);
+    gcUpdater = new GcTimeUpdater();
   }
 
   ////////////////////////////////////////////
@@ -370,6 +390,10 @@ abstract public class Task implements Writable, Configurable {
   String getUser() {
     return user;
   }
+  
+  void setUser(String user) {
+    this.user = user;
+  }
 
   ////////////////////////////////////////////
   // Writable methods
@@ -391,6 +415,7 @@ abstract public class Task implements Writable, Configurable {
     out.writeBoolean(writeSkipRecs);
     out.writeBoolean(taskCleanup);
     Text.writeString(out, user);
+    extraData.write(out);
   }
   
   public void readFields(DataInput in) throws IOException {
@@ -415,6 +440,7 @@ abstract public class Task implements Writable, Configurable {
       setPhase(TaskStatus.Phase.CLEANUP);
     }
     user = Text.readString(in);
+    extraData.readFields(in);
   }
 
   @Override
@@ -470,7 +496,9 @@ abstract public class Task implements Writable, Configurable {
       setState(TaskStatus.State.RUNNING);
     }
     if (useNewApi) {
-      LOG.debug("using new api for output committer");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("using new api for output committer");
+      }
       outputFormat =
         ReflectionUtils.newInstance(taskContext.getOutputFormatClass(), job);
       committer = outputFormat.getOutputCommitter(taskContext);
@@ -487,8 +515,20 @@ abstract public class Task implements Writable, Configurable {
       }
     }
     committer.setupTask(taskContext);
+    Class<? extends ResourceCalculatorPlugin> clazz =
+        conf.getClass(TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,
+            null, ResourceCalculatorPlugin.class);
+    resourceCalculator = ResourceCalculatorPlugin
+            .getResourceCalculatorPlugin(clazz, conf);
+    LOG.info(" Using ResourceCalculatorPlugin : " + resourceCalculator);
+    if (resourceCalculator != null) {
+      initCpuCumulativeTime =
+        resourceCalculator.getProcResourceValues().getCumulativeCpuTime();
+    }
   }
   
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   protected class TaskReporter 
       extends org.apache.hadoop.mapreduce.StatusReporter
       implements Runnable, Reporter {
@@ -496,6 +536,7 @@ abstract public class Task implements Writable, Configurable {
     private InputSplit split = null;
     private Progress taskProgress;
     private Thread pingThread = null;
+
     /**
      * flag that indicates whether progress update needs to be sent to parent.
      * If true, it has been set. If false, it has been reset. 
@@ -508,6 +549,7 @@ abstract public class Task implements Writable, Configurable {
       this.umbilical = umbilical;
       this.taskProgress = taskProgress;
     }
+
     // getters and setters for flag
     void setProgressFlag() {
       progressFlag.set(true);
@@ -573,7 +615,7 @@ abstract public class Task implements Writable, Configurable {
       } else {
         return split;
       }
-    }    
+    }  
     /** 
      * The communication thread handles communication with the parent (Task Tracker). 
      * It sends progress updates if progress has been made or if the task needs to 
@@ -592,8 +634,10 @@ abstract public class Task implements Writable, Configurable {
             Thread.sleep(PROGRESS_INTERVAL);
           } 
           catch (InterruptedException e) {
-            LOG.debug(getTaskID() + " Progress/ping thread exiting " +
-            "since it got interrupted");
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(getTaskID() + " Progress/ping thread exiting " +
+                        "since it got interrupted");
+            }
             break;
           }
 
@@ -662,7 +706,9 @@ abstract public class Task implements Writable, Configurable {
     SortedRanges.Range range = 
       new SortedRanges.Range(currentRecStartIndex, len);
     taskStatus.setNextRecordRange(range);
-    LOG.debug("sending reportNextRecordRange " + range);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("sending reportNextRecordRange " + range);
+    }
     umbilical.reportNextRecordRange(taskId, range);
   }
 
@@ -674,6 +720,66 @@ abstract public class Task implements Writable, Configurable {
     TaskReporter reporter = new TaskReporter(getProgress(), umbilical);
     reporter.startCommunicationThread();
     return reporter;
+  }
+
+  /**
+   * Update resource information counters
+   */
+  void updateResourceCounters() {
+    if (resourceCalculator == null) {
+      return;
+    }
+    ProcResourceValues res = resourceCalculator.getProcResourceValues();
+    long cpuTime = res.getCumulativeCpuTime();
+    long pMem = res.getPhysicalMemorySize();
+    long vMem = res.getVirtualMemorySize();
+    // Remove the CPU time consumed previously by JVM reuse
+    cpuTime -= initCpuCumulativeTime;
+    counters.findCounter(TaskCounter.CPU_MILLISECONDS).setValue(cpuTime);
+    counters.findCounter(TaskCounter.PHYSICAL_MEMORY_BYTES).setValue(pMem);
+    counters.findCounter(TaskCounter.VIRTUAL_MEMORY_BYTES).setValue(vMem);
+  }
+
+  /**
+   * An updater that tracks the amount of time this task has spent in GC.
+   */
+  class GcTimeUpdater {
+    private long lastGcMillis = 0;
+    private List<GarbageCollectorMXBean> gcBeans = null;
+
+    public GcTimeUpdater() {
+      this.gcBeans = ManagementFactory.getGarbageCollectorMXBeans();
+      getElapsedGc(); // Initialize 'lastGcMillis' with the current time spent.
+    }
+
+    /**
+     * @return the number of milliseconds that the gc has used for CPU
+     * since the last time this method was called.
+     */
+    protected long getElapsedGc() {
+      long thisGcMillis = 0;
+      for (GarbageCollectorMXBean gcBean : gcBeans) {
+        thisGcMillis += gcBean.getCollectionTime();
+      }
+
+      long delta = thisGcMillis - lastGcMillis;
+      this.lastGcMillis = thisGcMillis;
+      return delta;
+    }
+
+    /**
+     * Increment the gc-elapsed-time counter.
+     */
+    public void incrementGcCounter() {
+      if (null == counters) {
+        return; // nothing to do.
+      }
+
+      Counter gcCounter = counters.findCounter(TaskCounter.GC_TIME_MILLIS);
+      if (null != gcCounter) {
+        gcCounter.increment(getElapsedGc());
+      }
+    }
   }
 
   /**
@@ -731,6 +837,9 @@ abstract public class Task implements Writable, Configurable {
       }
       updater.updateCounters();      
     }
+
+    gcUpdater.incrementGcCounter();
+    updateResourceCounters();
   }
 
   public void done(TaskUmbilicalProtocol umbilical,
@@ -740,8 +849,7 @@ abstract public class Task implements Writable, Configurable {
              + " And is in the process of commiting");
     updateCounters();
 
-    // check whether the commit is required.
-    boolean commitRequired = committer.needsTaskCommit(taskContext);
+    boolean commitRequired = isCommitRequired();
     if (commitRequired) {
       int retries = MAX_RETRIES;
       setState(TaskStatus.State.COMMIT_PENDING);
@@ -765,9 +873,28 @@ abstract public class Task implements Writable, Configurable {
     }
     taskDone.set(true);
     reporter.stopCommunicationThread();
+    // Make sure we send at least one set of counter increments. It's
+    // ok to call updateCounters() in this thread after comm thread stopped.
+    updateCounters();
     sendLastUpdate(umbilical);
     //signal the tasktracker that we are done
     sendDone(umbilical);
+  }
+
+  /**
+   * Checks if this task has anything to commit, depending on the
+   * type of task, as well as on whether the {@link OutputCommitter}
+   * has anything to commit.
+   * 
+   * @return true if the task has to commit
+   * @throws IOException
+   */
+  boolean isCommitRequired() throws IOException {
+    boolean commitRequired = false;
+    if (isMapOrReduce()) {
+      commitRequired = committer.needsTaskCommit(taskContext);
+    }
+    return commitRequired;
   }
 
   /**
@@ -798,13 +925,39 @@ abstract public class Task implements Writable, Configurable {
     }
   }
   
+  /**
+   * Sends last status update before sending umbilical.done(); 
+   */
   private void sendLastUpdate(TaskUmbilicalProtocol umbilical) 
   throws IOException {
+    taskStatus.setOutputSize(calculateOutputSize());
     // send a final status report
     taskStatus.statusUpdate(taskProgress.get(),
                             taskProgress.toString(), 
                             counters);
     statusUpdate(umbilical);
+  }
+
+  /**
+   * Calculates the size of output for this task.
+   * 
+   * @return -1 if it can't be found.
+   */
+   private long calculateOutputSize() throws IOException {
+    if (!isMapOrReduce()) {
+      return -1;
+    }
+
+    if (isMapTask() && conf.getNumReduceTasks() > 0) {
+      try {
+        Path mapOutput =  mapOutputFile.getOutputFile();
+        FileSystem localFS = FileSystem.getLocal(conf);
+        return localFS.getFileStatus(mapOutput).getLen();
+      } catch (IOException e) {
+        LOG.warn ("Could not find output size " , e);
+      }
+    }
+    return -1;
   }
 
   private void sendDone(TaskUmbilicalProtocol umbilical) throws IOException {
@@ -967,7 +1120,6 @@ abstract public class Task implements Writable, Configurable {
         NetUtils.addStaticResolution(name, resolvedName);
       }
     }
-    this.user = this.conf.getUser();
   }
 
   public Configuration getConf() {
@@ -977,6 +1129,8 @@ abstract public class Task implements Writable, Configurable {
   /**
    * OutputCollector for the combiner.
    */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   public static class CombineOutputCollector<K extends Object, V extends Object> 
   implements OutputCollector<K, V> {
     private Writer<K, V> writer;
@@ -1106,6 +1260,8 @@ abstract public class Task implements Writable, Configurable {
   }
 
     /** Iterator to return Combined values */
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   public static class CombineValuesIterator<KEY,VALUE>
       extends ValuesIterator<KEY,VALUE> {
 
@@ -1162,6 +1318,8 @@ abstract public class Task implements Writable, Configurable {
     return reducerContext;
   }
 
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   protected static abstract class CombinerRunner<K,V> {
     protected final Counters.Counter inputCounter;
     protected final JobConf job;
@@ -1201,7 +1359,8 @@ abstract public class Task implements Writable, Configurable {
       }
       // make a task context so we can get the classes
       org.apache.hadoop.mapreduce.TaskAttemptContext taskContext =
-        new org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl(job, taskId);
+        new org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl(job, taskId,
+            reporter);
       Class<? extends org.apache.hadoop.mapreduce.Reducer<K,V,K,V>> newcls = 
         (Class<? extends org.apache.hadoop.mapreduce.Reducer<K,V,K,V>>)
            taskContext.getCombinerClass();
@@ -1214,6 +1373,8 @@ abstract public class Task implements Writable, Configurable {
     }
   }
   
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   protected static class OldCombinerRunner<K,V> extends CombinerRunner<K,V> {
     private final Class<? extends Reducer<K,V,K,V>> combinerClass;
     private final Class<K> keyClass;
@@ -1254,6 +1415,8 @@ abstract public class Task implements Writable, Configurable {
     }
   }
   
+  @InterfaceAudience.Private
+  @InterfaceStability.Unstable
   protected static class NewCombinerRunner<K, V> extends CombinerRunner<K,V> {
     private final Class<? extends org.apache.hadoop.mapreduce.Reducer<K,V,K,V>> 
         reducerClass;
@@ -1317,5 +1480,13 @@ abstract public class Task implements Writable, Configurable {
                                                 valueClass);
       reducer.run(reducerContext);
     } 
+  }
+
+  BytesWritable getExtraData() {
+    return extraData;
+  }
+
+  void setExtraData(BytesWritable extraData) {
+    this.extraData = extraData;
   }
 }

@@ -26,6 +26,8 @@ import junit.framework.Assert;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapred.TaskStatus.State;
 import org.apache.hadoop.mapred.TaskStatus.Phase;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
@@ -35,7 +37,9 @@ import org.apache.hadoop.mapreduce.JobPriority;
 import org.apache.hadoop.mapreduce.JobStatus;
 import org.apache.hadoop.mapreduce.QueueAclsInfo;
 import org.apache.hadoop.mapreduce.QueueInfo;
-import org.apache.hadoop.mapreduce.security.TokenStorage;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskReport;
 import org.apache.hadoop.mapreduce.TaskTrackerInfo;
@@ -44,6 +48,7 @@ import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.tools.rumen.TaskInfo;
 import org.apache.hadoop.tools.rumen.MapTaskAttemptInfo;
 import org.apache.hadoop.tools.rumen.ReduceTaskAttemptInfo;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapreduce.split.JobSplit.*;
 //
 // Mock jobtracker class that check heartbeat() in parameters and 
@@ -79,7 +84,7 @@ public class MockSimulatorJobTracker implements InterTrackerProtocol,
 
   @Override
   public JobStatus submitJob(
-      JobID jobId, String jobSubmitDir, TokenStorage ts) throws IOException {
+      JobID jobId, String jobSubmitDir, Credentials ts) throws IOException {
     JobStatus status = new JobStatus(jobId, 0.0f, 0.0f, 0.0f, 0.0f,
         JobStatus.State.RUNNING, JobPriority.NORMAL, "", "", "", "");
     return status;
@@ -407,6 +412,11 @@ public class MockSimulatorJobTracker implements InterTrackerProtocol,
   }
 
   @Override
+  public AccessControlList getQueueAdmins(String queueName) throws IOException {
+    throw new UnsupportedOperationException();
+  }
+
+  @Override
   public String[] getTaskDiagnostics(TaskAttemptID taskId) throws IOException,
       InterruptedException {
     throw new UnsupportedOperationException();
@@ -441,4 +451,28 @@ public class MockSimulatorJobTracker implements InterTrackerProtocol,
     throw new UnsupportedOperationException();
   }
 
+  @Override
+  public void cancelDelegationToken(Token<DelegationTokenIdentifier> token
+                                       ) throws IOException,
+                                                InterruptedException {
+  }
+
+  @Override
+  public Token<DelegationTokenIdentifier> 
+     getDelegationToken(Text renewer) throws IOException, InterruptedException {
+    return null;
+  }
+
+  @Override
+  public long renewDelegationToken(Token<DelegationTokenIdentifier> token
+                                      ) throws IOException,InterruptedException{
+    return 0;
+  }
+
+  @Override
+  public ProtocolSignature getProtocolSignature(String protocol,
+      long clientVersion, int clientMethodsHash) throws IOException {
+    return ProtocolSignature.getProtocolSignature(
+        this, protocol, clientVersion, clientMethodsHash);
+  }
 }

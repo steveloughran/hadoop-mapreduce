@@ -20,9 +20,18 @@ package org.apache.hadoop.security;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.fail;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
+
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.net.URI;
+import java.net.URL;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -32,11 +41,16 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileSystem;
+import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.server.namenode.NameNode;
+import org.apache.hadoop.hdfs.tools.DFSAdmin;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.MiniMRCluster;
 import org.apache.hadoop.mapred.tools.MRAdmin;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.security.authorize.AuthorizationException;
+import org.apache.hadoop.security.authorize.ProxyUsers;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -45,6 +59,7 @@ public class TestMapredGroupMappingServiceRefresh {
   private MiniDFSCluster cluster;
   JobConf config;
   private static long groupRefreshTimeoutSec = 2;
+  private String tempResource = null;
   private static final Log LOG = LogFactory
       .getLog(TestMapredGroupMappingServiceRefresh.class);
   
@@ -60,6 +75,14 @@ public class TestMapredGroupMappingServiceRefresh {
       l.add(g2);
       i++;
       return l;
+    }
+  
+    @Override
+    public void cacheGroupsRefresh() throws IOException {
+    }
+  
+    @Override
+    public void cacheGroupsAdd(List<String> groups) throws IOException {
     }
   }
   
@@ -78,6 +101,7 @@ public class TestMapredGroupMappingServiceRefresh {
         ShellBasedUnixGroupsMapping.class,GroupMappingServiceProvider.class).
         getName());
     
+    Groups.getUserToGroupsMappingService(config);
     String namenodeUrl = "hdfs://localhost:" + "0";
     FileSystem.setDefaultUri(config, namenodeUrl);
     
@@ -90,12 +114,17 @@ public class TestMapredGroupMappingServiceRefresh {
       3, null, null, config);
     
     config.set(JTConfig.JT_IPC_ADDRESS, "localhost:"+miniMRCluster.getJobTrackerPort());
+    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
   }
 
   @After
   public void tearDown() throws Exception {
     if(cluster!=null) {
       cluster.shutdown();
+    }
+    if(tempResource!=null) {
+      File f = new File(tempResource);
+      f.delete();
     }
   }
   
@@ -104,8 +133,8 @@ public class TestMapredGroupMappingServiceRefresh {
     MRAdmin admin = new MRAdmin(config);
     String [] args = new String[] { "-refreshUserToGroupsMappings" };
     
-    Groups groups = SecurityUtil.getUserToGroupsMappingService(config);
-    String user = UnixUserGroupInformation.getUnixUserName();
+    Groups groups = Groups.getUserToGroupsMappingService(config);
+    String user = UserGroupInformation.getLoginUser().getShortUserName();
     System.out.println("first attempt:");
     List<String> g1 = groups.getGroups(user);
     String [] str_groups = new String [g1.size()];
@@ -141,4 +170,102 @@ public class TestMapredGroupMappingServiceRefresh {
       assertFalse("Should be different group ", g3.get(i).equals(g4.get(i)));
     }
   }
+  
+  @Test
+  public void testRefreshSuperUserGroupsConfiguration() throws Exception {
+    final String SUPER_USER = "super_user";
+    final String [] GROUP_NAMES1 = new String [] {"gr1" , "gr2"};
+    final String [] GROUP_NAMES2 = new String [] {"gr3" , "gr4"};
+    
+    //keys in conf
+    String userKeyGroups = ProxyUsers.getProxySuperuserGroupConfKey(SUPER_USER);
+    String userKeyHosts = ProxyUsers.getProxySuperuserIpConfKey (SUPER_USER);
+    
+    config.set(userKeyGroups, "gr3,gr4,gr5"); // superuser can proxy for this group
+    config.set(userKeyHosts,"127.0.0.1");
+    ProxyUsers.refreshSuperUserGroupsConfiguration(config);
+    
+    UserGroupInformation ugi1 = mock(UserGroupInformation.class);
+    UserGroupInformation ugi2 = mock(UserGroupInformation.class);
+    UserGroupInformation suUgi = mock(UserGroupInformation.class);
+    when(ugi1.getRealUser()).thenReturn(suUgi);
+    when(ugi2.getRealUser()).thenReturn(suUgi);
+
+    when(suUgi.getShortUserName()).thenReturn(SUPER_USER); // super user
+    when(suUgi.getUserName()).thenReturn(SUPER_USER+"L"); // super user
+     
+    when(ugi1.getShortUserName()).thenReturn("user1");
+    when(ugi2.getShortUserName()).thenReturn("user2");
+    
+    when(ugi1.getUserName()).thenReturn("userL1");
+    when(ugi2.getUserName()).thenReturn("userL2");
+   
+    // set groups for users
+    when(ugi1.getGroupNames()).thenReturn(GROUP_NAMES1);
+    when(ugi2.getGroupNames()).thenReturn(GROUP_NAMES2);
+   
+    
+    // check before
+    try {
+      ProxyUsers.authorize(ugi1, "127.0.0.1", config);
+      fail("first auth for " + ugi1.getShortUserName() + " should've failed ");
+    } catch (AuthorizationException e) {
+      // expected
+      System.err.println("auth for " + ugi1.getUserName() + " failed");
+    }
+    try {
+      ProxyUsers.authorize(ugi2, "127.0.0.1", config);
+      System.err.println("auth for " + ugi2.getUserName() + " succeeded");
+      // expected
+    } catch (AuthorizationException e) {
+      fail("first auth for " + ugi2.getShortUserName() + " should've succeeded: " + e.getLocalizedMessage());
+    }
+    
+    // refresh will look at configuration on the server side
+    // add additional resource with the new value
+    // so the server side will pick it up
+    String rsrc = "testRefreshSuperUserGroupsConfiguration_rsrc.xml";
+    addNewConfigResource(rsrc, userKeyGroups, "gr2", userKeyHosts, "127.0.0.1");  
+    
+    MRAdmin admin = new MRAdmin(config);
+    String [] args = new String[]{"-refreshSuperUserGroupsConfiguration"};
+    admin.run(args);
+    
+    try {
+      ProxyUsers.authorize(ugi2, "127.0.0.1", config);
+      fail("second auth for " + ugi2.getShortUserName() + " should've failed ");
+    } catch (AuthorizationException e) {
+      // expected
+      System.err.println("auth for " + ugi2.getUserName() + " failed");
+    }
+    try {
+      ProxyUsers.authorize(ugi1, "127.0.0.1", config);
+      System.err.println("auth for " + ugi1.getUserName() + " succeeded");
+      // expected
+    } catch (AuthorizationException e) {
+      fail("second auth for " + ugi1.getShortUserName() + " should've succeeded: " + e.getLocalizedMessage());
+    }    
+  }
+  
+  private void addNewConfigResource(String rsrcName, String keyGroup,
+      String groups, String keyHosts, String hosts)  throws FileNotFoundException {
+    // location for temp resource should be in CLASSPATH
+    URL url = config.getResource("mapred-site.xml");
+    Path p = new Path(url.getPath());
+    Path dir = p.getParent();
+    tempResource = dir.toString() + "/" + rsrcName;
+    
+    
+    String newResource =
+    "<configuration>"+
+    "<property><name>" + keyGroup + "</name><value>"+groups+"</value></property>" +
+    "<property><name>" + keyHosts + "</name><value>"+hosts+"</value></property>" +
+    "</configuration>";
+    PrintWriter writer = new PrintWriter(new FileOutputStream(tempResource));
+    writer.println(newResource);
+    writer.close();
+
+    Configuration.addDefaultResource(rsrcName);
+  }
+
 }

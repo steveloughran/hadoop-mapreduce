@@ -158,6 +158,20 @@ class JobTrackerInstrumentation {
   { }
 
   public void setDecommissionedTrackers(int trackers)
-  { }  
+  { }   
 
+  public void heartbeat() {
+  }
+
+  public void speculateMap(TaskAttemptID taskAttemptID)
+  { }
+
+  public void speculateReduce(TaskAttemptID taskAttemptID)
+  { }
+
+  public void launchDataLocalMap(TaskAttemptID taskAttemptID)
+  { }
+
+  public void launchRackLocalMap(TaskAttemptID taskAttemptID)
+  { }
 }

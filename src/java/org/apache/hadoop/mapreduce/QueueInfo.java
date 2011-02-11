@@ -24,6 +24,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
@@ -33,6 +35,8 @@ import org.apache.hadoop.io.WritableUtils;
  * maintained by the Hadoop Map/Reduce framework.
  * 
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class QueueInfo implements Writable {
 
   private String queueName = "";
@@ -56,7 +60,7 @@ public class QueueInfo implements Writable {
    */
   public QueueInfo() {
     // make it running by default.
-    this.queueState = queueState.RUNNING;
+    this.queueState = QueueState.RUNNING;
     children = new ArrayList<QueueInfo>();
     props = new Properties();
   }

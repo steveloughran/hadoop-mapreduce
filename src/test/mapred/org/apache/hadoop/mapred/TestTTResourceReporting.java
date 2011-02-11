@@ -23,6 +23,7 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.mapreduce.SleepJob;
+import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.util.LinuxResourceCalculatorPlugin;
 import org.apache.hadoop.mapreduce.util.ResourceCalculatorPlugin;
 import org.apache.hadoop.util.ToolRunner;
@@ -120,11 +121,11 @@ public class TestTTResourceReporting extends TestCase {
       float reportedCpuUsage = status.getResourceStatus().getCpuUsage();
 
       message =
-          "expected memory values : "
+          "expected values : "
               + "(totalVirtualMemoryOnTT, totalPhysicalMemoryOnTT, "
               + "availableVirtualMemoryOnTT, availablePhysicalMemoryOnTT, "
               + "mapSlotMemSize, reduceSlotMemorySize, cumulativeCpuTime, "
-              + "cpuFrequency, numProcessors) = ("
+              + "cpuFrequency, numProcessors, cpuUsage) = ("
               + totalVirtualMemoryOnTT + ", "
               + totalPhysicalMemoryOnTT + ","
               + availableVirtualMemoryOnTT + ", "
@@ -137,12 +138,12 @@ public class TestTTResourceReporting extends TestCase {
               + cpuUsage
               +")";
       message +=
-          "\nreported memory values : "
+          "\nreported values : "
               + "(totalVirtualMemoryOnTT, totalPhysicalMemoryOnTT, "
               + "availableVirtualMemoryOnTT, availablePhysicalMemoryOnTT, "
               + "reportedMapSlotMemorySize, reportedReduceSlotMemorySize, "
               + "reportedCumulativeCpuTime, reportedCpuFrequency, "
-              + "reportedNumProcessors) = ("
+              + "reportedNumProcessors, cpuUsage) = ("
               + reportedTotalVirtualMemoryOnTT + ", "
               + reportedTotalPhysicalMemoryOnTT + ","
               + reportedAvailableVirtualMemoryOnTT + ", "
@@ -154,14 +155,50 @@ public class TestTTResourceReporting extends TestCase {
               + reportedNumProcessors + ","
               + reportedCpuUsage
                + ")";
-      hasPassed = true;
-      hasDynamicValuePassed = true;
       LOG.info(message);
+      hasDynamicValuePassed = true;
+      // Check task resource status in task reports
+      for (TaskStatus taskStatus : status.getTaskReports()) {
+        Counters counters = taskStatus.getCounters();
+        // This should be zero because the initial CPU time is subtracted.
+        long procCumulativeCpuTime = 0;
+        long procVirtualMemorySize =
+          getConf().getLong("procVirtualMemorySize", -1);
+        long procPhysicalMemorySize =
+          getConf().getLong("procPhysicalMemorySize", -1);
+        long reportedProcCumulativeCpuTime =
+          counters.findCounter(TaskCounter.CPU_MILLISECONDS).getValue();
+        long reportedProcVirtualMemorySize =
+          counters.findCounter(TaskCounter.VIRTUAL_MEMORY_BYTES).getValue();
+        long reportedProcPhysicalMemorySize =
+          counters.findCounter(TaskCounter.PHYSICAL_MEMORY_BYTES).getValue();
+        String procMessage =
+          "expected values : "
+              + "(procCumulativeCpuTime, procVirtualMemorySize,"
+              + " procPhysicalMemorySize) = ("
+              + procCumulativeCpuTime + ", "
+              + procVirtualMemorySize + ", "
+              + procPhysicalMemorySize + ")";
+        procMessage +=
+          "\nreported values : "
+              + "(procCumulativeCpuTime, procVirtualMemorySize,"
+              + " procPhysicalMemorySize) = ("
+              + reportedProcCumulativeCpuTime + ", "
+              + reportedProcVirtualMemorySize + ", "
+              + reportedProcPhysicalMemorySize + ")";
+        LOG.info(procMessage);
+        message += "\n" + procMessage;
+        if (procCumulativeCpuTime != reportedProcCumulativeCpuTime ||
+            procVirtualMemorySize != reportedProcVirtualMemorySize ||
+            procPhysicalMemorySize != reportedProcPhysicalMemorySize) {
+          hasDynamicValuePassed = false;
+        }
+      }
+      hasPassed = true;
       if (totalVirtualMemoryOnTT != reportedTotalVirtualMemoryOnTT
           || totalPhysicalMemoryOnTT != reportedTotalPhysicalMemoryOnTT
           || mapSlotMemorySize != reportedMapSlotMemorySize
           || reduceSlotMemorySize != reportedReduceSlotMemorySize
-          || cpuFrequency != reportedCpuFrequency
           || numProcessors != reportedNumProcessors) {
         hasPassed = false;
       }
@@ -170,6 +207,7 @@ public class TestTTResourceReporting extends TestCase {
       if (availableVirtualMemoryOnTT != reportedAvailableVirtualMemoryOnTT
           || availablePhysicalMemoryOnTT != reportedAvailablePhysicalMemoryOnTT
           || cumulativeCpuTime != reportedCumulativeCpuTime
+          || cpuFrequency != reportedCpuFrequency
           || cpuUsage != reportedCpuUsage) {
         hasDynamicValuePassed = false;
       }
@@ -192,7 +230,11 @@ public class TestTTResourceReporting extends TestCase {
           org.apache.hadoop.mapreduce.server.tasktracker.TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,       
           DummyResourceCalculatorPlugin.class, ResourceCalculatorPlugin.class);
       setUpCluster(conf);
-      runSleepJob(miniMRCluster.createJobConf());
+      JobConf jobConf = miniMRCluster.createJobConf();
+      jobConf.setClass(
+          org.apache.hadoop.mapreduce.server.tasktracker.TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,
+          DummyResourceCalculatorPlugin.class, ResourceCalculatorPlugin.class);
+      runSleepJob(jobConf);
       verifyTestResults();
     } finally {
       tearDownCluster();
@@ -218,6 +260,9 @@ public class TestTTResourceReporting extends TestCase {
     conf.setLong("cpuFrequency", 2000000L);
     conf.setInt("numProcessors", 8);
     conf.setFloat("cpuUsage", 15.5F);
+    conf.setLong("procCumulativeCpuTime", 1000L);
+    conf.setLong("procVirtualMemorySize", 2 * 1024 * 1024 * 1024L);
+    conf.setLong("procPhysicalMemorySize", 1024 * 1024 * 1024L);
 
     conf.setClass(
         org.apache.hadoop.mapreduce.server.tasktracker.TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,       
@@ -232,12 +277,19 @@ public class TestTTResourceReporting extends TestCase {
     conf.setLong(DummyResourceCalculatorPlugin.CPU_FREQUENCY, 2000000L);
     conf.setInt(DummyResourceCalculatorPlugin.NUM_PROCESSORS, 8);
     conf.setFloat(DummyResourceCalculatorPlugin.CPU_USAGE, 15.5F);
-    
     try {
       setUpCluster(conf);
       JobConf jobConf = miniMRCluster.createJobConf();
       jobConf.setMemoryForMapTask(1 * 1024L);
       jobConf.setMemoryForReduceTask(2 * 1024L);
+      jobConf.setClass(
+        org.apache.hadoop.mapreduce.server.tasktracker.TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,
+        DummyResourceCalculatorPlugin.class, ResourceCalculatorPlugin.class);
+      jobConf.setLong(DummyResourceCalculatorPlugin.PROC_CUMULATIVE_CPU_TIME, 1000L);
+      jobConf.setLong(DummyResourceCalculatorPlugin.PROC_VMEM_TESTING_PROPERTY,
+                      2 * 1024 * 1024 * 1024L);
+      jobConf.setLong(DummyResourceCalculatorPlugin.PROC_PMEM_TESTING_PROPERTY,
+                      1024 * 1024 * 1024L);
       runSleepJob(jobConf);
       verifyTestResults();
     } finally {
@@ -260,10 +312,9 @@ public class TestTTResourceReporting extends TestCase {
 
     JobConf conf = new JobConf();
     LinuxResourceCalculatorPlugin plugin = new LinuxResourceCalculatorPlugin();
-    // In this case, we only check these four fields because they are static
+    // In this case, we only check these three fields because they are static
     conf.setLong("totalVmemOnTT", plugin.getVirtualMemorySize());
     conf.setLong("totalPmemOnTT", plugin.getPhysicalMemorySize());
-    conf.setLong("cpuFrequency", plugin.getCpuFrequency());
     conf.setLong("numProcessors", plugin.getNumProcessors());
 
     try {

@@ -32,6 +32,8 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.mapred.TaskStatus.Phase;
 import org.apache.hadoop.mapred.TaskStatus.State;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
+import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.conf.Configuration;
 
 import org.apache.hadoop.mapred.FakeJobs;
 import org.junit.Test;
@@ -56,6 +58,8 @@ public class TestSimulatorJobTracker {
     jtConf.set("mapred.system.dir", jtConf.get("hadoop.tmp.dir", "/tmp/hadoop-"
         + jtConf.getUser())
         + "/mapred/system");
+    jtConf.set("mapred.queue.names",JobConf.DEFAULT_QUEUE_NAME);
+    jtConf.setBoolean(JTConfig.JT_PERSIST_JOBSTATUS, false);
     System.out.println("Created JobConf");
     return jtConf;
   }
@@ -89,9 +93,8 @@ public class TestSimulatorJobTracker {
     short responseId = 0;
     int now = 0;
 
-    FakeTaskTracker(InterTrackerProtocol jobTracker, String taskTrackerName,
-        String hostName, int maxMapTasks, int maxReduceTasks) {
-      super(jobTracker, taskTrackerName, hostName, maxMapTasks, maxReduceTasks);
+    FakeTaskTracker(InterTrackerProtocol jobTracker, Configuration conf) {
+      super(jobTracker, conf);
 
       LOG.info("FakeTaskTracker constructor, taskTrackerName="
           + taskTrackerName);
@@ -199,9 +202,15 @@ public class TestSimulatorJobTracker {
       LOG.info("From JTQueue: job id = " + js.getJobID());
     }
 
-    FakeTaskTracker fakeTracker = new FakeTaskTracker(sjobTracker,
-        "tracker_host1.foo.com:localhost/127.0.0.1:9010", "host1.foo.com", 10,
-        10);
+    Configuration ttConf = new Configuration();
+    ttConf.set("mumak.tasktracker.tracker.name", 
+               "tracker_host1.foo.com:localhost/127.0.0.1:9010");
+    ttConf.set("mumak.tasktracker.host.name", "host1.foo.com"); 
+    ttConf.setInt("mapred.tasktracker.map.tasks.maximum", 10); 
+    ttConf.setInt("mapred.tasktracker.reduce.tasks.maximum", 10);
+    ttConf.setInt("mumak.tasktracker.heartbeat.fuzz", -1); 
+    FakeTaskTracker fakeTracker = new FakeTaskTracker(sjobTracker, ttConf);
+    
     int numLaunchTaskActions = 0;
 
     for (int i = 0; i < NoMaps * 2; ++i) { // we should be able to assign all

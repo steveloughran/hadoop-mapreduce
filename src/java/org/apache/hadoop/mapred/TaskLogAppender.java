@@ -21,6 +21,7 @@ package org.apache.hadoop.mapred;
 import java.util.LinkedList;
 import java.util.Queue;
 
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.log4j.FileAppender;
 import org.apache.log4j.spi.LoggingEvent;
 
@@ -29,11 +30,13 @@ import org.apache.log4j.spi.LoggingEvent;
  * map-reduce system logs.
  * 
  */
+@InterfaceStability.Unstable
 public class TaskLogAppender extends FileAppender {
   private String taskId; //taskId should be managed as String rather than TaskID object
   //so that log4j can configure it from the configuration(log4j.properties). 
   private int maxEvents;
   private Queue<LoggingEvent> tail = null;
+  private boolean isCleanup;
 
   @Override
   public void activateOptions() {
@@ -41,8 +44,8 @@ public class TaskLogAppender extends FileAppender {
       if (maxEvents > 0) {
         tail = new LinkedList<LoggingEvent>();
       }
-      setFile(TaskLog.getTaskLogFile(TaskAttemptID.forName(taskId), 
-                                     TaskLog.LogName.SYSLOG).toString());
+      setFile(TaskLog.getTaskLogFile(TaskAttemptID.forName(taskId),
+          isCleanup, TaskLog.LogName.SYSLOG).toString());
       setAppend(true);
       super.activateOptions();
     }
@@ -98,4 +101,22 @@ public class TaskLogAppender extends FileAppender {
     maxEvents = (int) logSize / EVENT_SIZE;
   }
 
+  /**
+   * Set whether the task is a cleanup attempt or not.
+   * 
+   * @param isCleanup
+   *          true if the task is cleanup attempt, false otherwise.
+   */
+  public void setIsCleanup(boolean isCleanup) {
+    this.isCleanup = isCleanup;
+  }
+
+  /**
+   * Get whether task is cleanup attempt or not.
+   * 
+   * @return true if the task is cleanup attempt, false otherwise.
+   */
+  public boolean getIsCleanup() {
+    return isCleanup;
+  }
 }
