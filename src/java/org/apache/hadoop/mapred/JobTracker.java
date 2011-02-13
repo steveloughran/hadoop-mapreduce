@@ -1543,7 +1543,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         if (fs == null) {
           fs = getMROwner().doAs(new PrivilegedExceptionAction<FileSystem>() {
             public FileSystem run() throws IOException {
-              return FileSystem.get(conf);
+              return FileSystem.newInstance(conf);
           }});
         }
         // clean up the system dir, which will only work if hdfs is out of 
@@ -1839,6 +1839,10 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
       jobHistory.shutDown();
     }
     DelegationTokenRenewal.close();
+    if (fs != null) {
+      fs.close();
+      fs = null;
+    }
     LOG.info("stopped all jobtracker services");
     return;
   }
@@ -4595,7 +4599,7 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     trackerIdentifier = getDateFormat().format(new Date());
 
     if (fs == null) {
-      fs = FileSystem.get(conf);
+      fs = FileSystem.newInstance(conf);
     }
     this.localFs = FileSystem.getLocal(conf);
     
