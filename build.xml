@@ -94,6 +94,7 @@
   <property name="test.generated.dir" value="${test.build.dir}/src"/>
   <property name="test.build.data" value="${test.build.dir}/data"/>
   <property name="test.cache.data" value="${test.build.dir}/cache"/>
+  <property name="test.concat.data" value="${test.build.dir}/concat"/>
   <property name="test.debug.data" value="${test.build.dir}/debug"/>
   <property name="test.log.dir" value="${test.build.dir}/logs"/>
   <property name="test.build.classes" value="${test.build.dir}/classes"/>
@@ -122,6 +123,7 @@
   <property name="test.mapred.commit.tests.file" value="${test.src.dir}/commit-tests" />
   <property name="test.mapred.smoke.tests.file" value="${test.src.dir}/smoke-tests" />
   <property name="test.mapred.all.tests.file" value="${test.src.dir}/all-tests" />
+  <property name="test.exclude.file" value="${test.src.dir}/empty-file" />
 
   <property name="librecordio.test.dir" value="${test.build.dir}/librecordio"/>
   <property name="web.src.dir" value="${basedir}/src/web"/>
@@ -571,6 +573,8 @@
 
      <delete dir="${test.cache.data}"/>
      <mkdir dir="${test.cache.data}"/>
+     <delete dir="${test.concat.data}"/>
+     <mkdir dir="${test.concat.data}"/>
      <delete dir="${test.debug.data}"/>
      <mkdir dir="${test.debug.data}"/>
      <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/testscript.txt" todir="${test.debug.data}"/>
@@ -582,6 +586,12 @@
      <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/test.tar.gz" todir="${test.cache.data}"/>
      <copy file="${test.src.dir}/mapred/org/apache/hadoop/cli/testMRConf.xml" todir="${test.cache.data}"/>
      <copy file="${test.src.dir}/mapred/org/apache/hadoop/cli/data60bytes" todir="${test.cache.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/concat.bz2" todir="${test.concat.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/concat.gz" todir="${test.concat.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/testCompressThenConcat.txt.bz2" todir="${test.concat.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/testCompressThenConcat.txt.gz" todir="${test.concat.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/testConcatThenCompress.txt.bz2" todir="${test.concat.data}"/>
+     <copy file="${test.src.dir}/mapred/org/apache/hadoop/mapred/testConcatThenCompress.txt.gz" todir="${test.concat.data}"/>
   </target>
 
   <macrodef name="macro-compile-test">
@@ -678,6 +688,7 @@
           value="${test.src.dir}/krb5.conf"/>
         <sysproperty key="test.tools.input.dir" value = "${test.tools.input.dir}"/>
         <sysproperty key="test.cache.data" value="${test.cache.data}"/>     
+        <sysproperty key="test.concat.data" value="${test.concat.data}"/>
         <sysproperty key="test.debug.data" value="${test.debug.data}"/>
         <sysproperty key="hadoop.log.dir" value="@{test.dir}/logs"/>
         <sysproperty key="test.src.dir" value="@{fileset.dir}"/>
@@ -709,6 +720,7 @@
             excludes="**/${test.exclude}.java aop/** system/**">
             <patternset>
               <includesfile name="@{test.file}"/>
+              <excludesfile name="${test.exclude.file}" />
             </patternset>
             <patternset refid="@{exclude.list.id}"/>
           </fileset>
@@ -723,7 +735,8 @@
         <batchtest todir="@{test.dir}" if="tests.notestcase.fi">
           <fileset dir="@{fileset.dir}/aop"
             includes="**/${test.include}.java"
-            excludes="**/${test.exclude}.java" />
+            excludes="**/${test.exclude}.java"
+            excludesfile="${test.exclude.file}" />
         </batchtest>
         <!-- batch test for testing a single test case in aop folder with
         fault injection-->
@@ -1046,7 +1059,7 @@
 
        <group title="Packages" packages="org.apache.*"/>
        <group title="Libraries" packages="org.apache.hadoop.mapred.lib*:org.apache.hadoop.mapreduce.lib*"/>
-       <group title="Tools" packages="org.apache.hadoop.tools"/>
+       <group title="Tools" packages="org.apache.hadoop.fs*:org.apache.hadoop.tools*:org.apache.hadoop.mapred.tool*:org.apache.hadoop.mapreduce.tool*"/>
        <group title="Examples" packages="org.apache.hadoop.examples*"/>
 
        <group title="contrib: DataJoin" packages="org.apache.hadoop.contrib.utils.join*"/>
@@ -1208,6 +1221,12 @@
     <copy todir="${dist.dir}/" file="build-utils.xml"/>
 
     <chmod perm="ugo+x" type="file" parallel="false">
+        <fileset file="${dist.dir}/src/examples/pipes/configure"/>
+        <fileset file="${dist.dir}/src/c++/utils/configure"/>
+        <fileset file="${dist.dir}/src/c++/pipes/configure"/>
+        <fileset file="${dist.dir}/src/c++/task-controller/configure"/>
+    </chmod>
+    <chmod perm="ugo+x" type="file" parallel="false">
         <fileset dir="${dist.dir}/bin"/>
         <fileset dir="${dist.dir}/src/contrib/">
           <include name="*/bin/*" />
@@ -1228,11 +1247,19 @@
         <tarfileset dir="${build.dir}" mode="664">
           <exclude name="${final.name}/bin/*" />
           <exclude name="${final.name}/contrib/*/bin/*" />
+          <exclude name="${final.name}/src/examples/pipes/configure"/>
+          <exclude name="${final.name}/src/c++/utils/configure"/>
+          <exclude name="${final.name}/src/c++/pipes/configure"/>
+          <exclude name="${final.name}/src/c++/task-controller/configure"/>
           <include name="${final.name}/**" />
         </tarfileset>
         <tarfileset dir="${build.dir}" mode="755">
           <include name="${final.name}/bin/*" />
           <include name="${final.name}/contrib/*/bin/*" />
+          <include name="${final.name}/src/examples/pipes/configure"/>
+          <include name="${final.name}/src/c++/utils/configure"/>
+          <include name="${final.name}/src/c++/pipes/configure"/>
+          <include name="${final.name}/src/c++/task-controller/configure"/>
         </tarfileset>
       </param.listofitems>
     </macro_tar>
@@ -1563,6 +1590,7 @@
         <exclude name="lib/jdiff/"/>
         <exclude name="src/test/all-tests"/>
         <exclude name="src/test/commit-tests"/>
+        <exclude name="src/test/empty-file"/>
         <exclude name="src/test/mapred/org/apache/hadoop/mapred/test.tgz"/>
         <exclude name="src/test/tools/data/rumen/**/*"/>
         <exclude name="src/test/mapred/org/apache/hadoop/mapred/*.txt"/>
