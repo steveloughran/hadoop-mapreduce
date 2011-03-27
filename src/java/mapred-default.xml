@@ -33,16 +33,6 @@
 </property>
 
 <property>
-  <name>mapreduce.job.userhistorylocation</name>
-  <value></value>
-  <description> User can specify a location to store the history files of 
-  a particular job. If nothing is specified, the logs are stored in 
-  output directory. The files are stored in "_logs/history/" in the directory.
-  User can stop logging by giving the value "none". 
-  </description>
-</property>
-
-<property>
   <name>mapreduce.jobtracker.jobhistory.completed.location</name>
   <value></value>
   <description> The completed job history files are stored at this single well 
@@ -1020,6 +1010,26 @@
     index cache that is used when serving map outputs to reducers.
   </description>
 </property>
+
+<!-- TaskTracker DistributedCache configuration -->
+<property>
+  <name>mapreduce.tasktracker.cache.local.size</name>
+  <value>10737418240</value>
+  <description>The number of bytes to allocate in each local TaskTracker
+  directory for holding Distributed Cache data.</description>
+</property>
+
+<property>
+  <name>mapreduce.tasktracker.cache.local.numberdirectories</name>
+  <value>10000</value>
+  <description>
+  The maximum number of subdirectories that should be created in any particular
+  distributed cache store. After this many directories have been created,
+  cache items will be expunged regardless of whether the total size threshold
+  has been exceeded.
+  </description>
+</property>
+<!-- End of TaskTracker DistributedCache configuration -->
 
 <property>
   <name>mapreduce.task.merge.progress.records</name>

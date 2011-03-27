@@ -40,6 +40,8 @@ public interface MRJobConfig {
 
   public static final String SETUP_CLEANUP_NEEDED = "mapreduce.job.committer.setup.cleanup.needed";
 
+  public static final String TASK_CLEANUP_NEEDED = "mapreduce.job.committer.task.cleanup.needed";
+
   public static final String JAR = "mapreduce.job.jar";
 
   public static final String ID = "mapreduce.job.id";
@@ -87,8 +89,6 @@ public interface MRJobConfig {
   public static final String GROUP_COMPARATOR_CLASS = "mapreduce.job.output.group.comparator.class";
 
   public static final String WORKING_DIR = "mapreduce.job.working.dir";
-
-  public static final String HISTORY_LOCATION = "mapreduce.job.userhistorylocation";
 
   public static final String END_NOTIFICATION_URL = "mapreduce.job.end-notification.url";
 
