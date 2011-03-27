@@ -39,11 +39,9 @@ import org.apache.hadoop.mapreduce.Counter;
 import org.apache.hadoop.mapreduce.InputSplit;
 import org.apache.hadoop.mapreduce.RecordReader;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
-import org.apache.hadoop.mapreduce.MapContext;
 import org.apache.hadoop.util.LineReader;
 import org.apache.commons.logging.LogFactory;
 import org.apache.commons.logging.Log;
-import org.apache.hadoop.fs.Seekable;
 
 /**
  * Treats keys as offset in file and value as line. 
@@ -68,11 +66,19 @@ public class LineRecordReader extends RecordReader<LongWritable, Text> {
   private Counter inputByteCounter;
   private CompressionCodec codec;
   private Decompressor decompressor;
+  private byte[] recordDelimiterBytes;
+
+  public LineRecordReader() {
+  }
+
+  public LineRecordReader(byte[] recordDelimiter) {
+    this.recordDelimiterBytes = recordDelimiter;
+  }
 
   public void initialize(InputSplit genericSplit,
                          TaskAttemptContext context) throws IOException {
     FileSplit split = (FileSplit) genericSplit;
-    inputByteCounter = ((MapContext)context).getCounter(
+    inputByteCounter = context.getCounter(
       FileInputFormat.COUNTER_GROUP, FileInputFormat.BYTES_READ);
     Configuration job = context.getConfiguration();
     this.maxLineLength = job.getInt(MAX_LINE_LENGTH, Integer.MAX_VALUE);
@@ -92,17 +98,33 @@ public class LineRecordReader extends RecordReader<LongWritable, Text> {
           ((SplittableCompressionCodec)codec).createInputStream(
             fileIn, decompressor, start, end,
             SplittableCompressionCodec.READ_MODE.BYBLOCK);
-        in = new LineReader(cIn, job);
+        if (null == this.recordDelimiterBytes){
+          in = new LineReader(cIn, job);
+        } else {
+          in = new LineReader(cIn, job, this.recordDelimiterBytes);
+        }
+
         start = cIn.getAdjustedStart();
         end = cIn.getAdjustedEnd();
         filePosition = cIn;
       } else {
-        in = new LineReader(codec.createInputStream(fileIn, decompressor), job);
+        if (null == this.recordDelimiterBytes) {
+          in = new LineReader(codec.createInputStream(fileIn, decompressor),
+              job);
+        } else {
+          in = new LineReader(codec.createInputStream(fileIn,
+              decompressor), job, this.recordDelimiterBytes);
+        }
         filePosition = fileIn;
       }
     } else {
       fileIn.seek(start);
-      in = new LineReader(fileIn, job);
+      if (null == this.recordDelimiterBytes){
+        in = new LineReader(fileIn, job);
+      } else {
+        in = new LineReader(fileIn, job, this.recordDelimiterBytes);
+      }
+
       filePosition = fileIn;
     }
     // If this is not the first split, we always throw away first record

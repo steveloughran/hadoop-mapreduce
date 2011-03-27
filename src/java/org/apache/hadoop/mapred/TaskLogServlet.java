@@ -28,11 +28,13 @@ import javax.servlet.http.HttpServlet;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.apache.commons.logging.Log;
+import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.JobACL;
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
 import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.AccessControlList;
@@ -46,7 +48,10 @@ import org.apache.hadoop.util.StringUtils;
 @InterfaceStability.Unstable
 public class TaskLogServlet extends HttpServlet {
   private static final long serialVersionUID = -6615764817774487321L;
-  
+
+  private static final Log LOG =
+    LogFactory.getLog(TaskLog.class);
+
   private boolean haveTaskLog(TaskAttemptID taskId, boolean isCleanup,
       TaskLog.LogName type) {
     File f = TaskLog.getTaskLogFile(taskId, isCleanup, type);
@@ -105,11 +110,10 @@ public class TaskLogServlet extends HttpServlet {
         // do nothing
       }
       else {
-        response.sendError(HttpServletResponse.SC_GONE,
-                         "Failed to retrieve " + filter + " log for task: " + 
-                         taskId);
-        out.write(("TaskLogServlet exception:\n" + 
-                 StringUtils.stringifyException(ioe) + "\n").getBytes());
+        String msg = "Failed to retrieve " + filter + " log for task: " + 
+                     taskId;
+        LOG.warn(msg, ioe);
+        response.sendError(HttpServletResponse.SC_GONE, msg);
       }
     }
   }
@@ -117,46 +121,58 @@ public class TaskLogServlet extends HttpServlet {
   /**
    * Validates if the given user has job view permissions for this job.
    * conf contains jobOwner and job-view-ACLs.
-   * We allow jobOwner, superUser(i.e. mrOwner) and members of superGroup and
+   * We allow jobOwner, superUser(i.e. mrOwner) and cluster administrators and
    * users and groups specified in configuration using
    * mapreduce.job.acl-view-job to view job.
    */
-  private void checkAccessForTaskLogs(JobConf conf, String user, JobID jobId,
+  private void checkAccessForTaskLogs(JobConf conf, String user, String jobId,
       TaskTracker tracker) throws AccessControlException {
 
-    if (!tracker.isJobLevelAuthorizationEnabled()) {
+    if (!tracker.areACLsEnabled()) {
       return;
     }
 
-    // buiild job view acl by reading from conf
+    // buiild job view ACL by reading from conf
     AccessControlList jobViewACL = tracker.getJobACLsManager().
         constructJobACLs(conf).get(JobACL.VIEW_JOB);
+
+    // read job queue name from conf
+    String queue = conf.getQueueName();
+
+    // build queue admins ACL by reading from conf
+    AccessControlList queueAdminsACL = new AccessControlList(
+        conf.get(toFullPropertyName(queue,
+            QueueACL.ADMINISTER_JOBS.getAclName()), " "));
 
     String jobOwner = conf.get(JobContext.USER_NAME);
     UserGroupInformation callerUGI =
         UserGroupInformation.createRemoteUser(user);
 
-    tracker.getJobACLsManager().checkAccess(jobId, callerUGI, JobACL.VIEW_JOB,
-        jobOwner, jobViewACL);
+    // check if user is queue admin or cluster admin or jobOwner or member of
+    // job-view-acl
+    if (!queueAdminsACL.isUserAllowed(callerUGI)) {
+      tracker.getACLsManager().checkAccess(jobId, callerUGI, queue,
+          Operation.VIEW_TASK_LOGS, jobOwner, jobViewACL);
+    }
   }
 
   /**
-   * Builds a Configuration object by reading the xml file.
+   * Builds a JobConf object by reading the job-acls.xml file.
    * This doesn't load the default resources.
    *
-   * Returns null if job-acls.xml is not there in userlogs/$jobid/attempt-dir on
+   * Returns null if job-acls.xml is not there in userlogs/$jobid on
    * local file system. This can happen when we restart the cluster with job
    * level authorization enabled(but was disabled on earlier cluster) and
    * viewing task logs of old jobs(i.e. jobs finished on earlier unsecure
    * cluster).
    */
-  static Configuration getConfFromJobACLsFile(TaskAttemptID attemptId,
-      boolean isCleanup) {
+  static JobConf getConfFromJobACLsFile(JobID jobId) {
     Path jobAclsFilePath = new Path(
-        TaskLog.getAttemptDir(attemptId, isCleanup).toString(), TaskRunner.jobACLsFile);
-    Configuration conf = null;
+        TaskLog.getJobDir(jobId).toString(),
+        TaskTracker.jobACLsFile);
+    JobConf conf = null;
     if (new File(jobAclsFilePath.toUri().getPath()).exists()) {
-      conf = new Configuration(false);
+      conf = new JobConf(false);
       conf.addResource(jobAclsFilePath);
     }
     return conf;
@@ -228,15 +244,15 @@ public class TaskLogServlet extends HttpServlet {
       ServletContext context = getServletContext();
       TaskTracker taskTracker = (TaskTracker) context.getAttribute(
           "task.tracker");
+      JobID jobId = attemptId.getJobID();
+
       // get jobACLConf from ACLs file
-      Configuration jobACLConf = getConfFromJobACLsFile(attemptId, isCleanup);
+      JobConf jobACLConf = getConfFromJobACLsFile(jobId);
       // Ignore authorization if job-acls.xml is not found
       if (jobACLConf != null) {
-        JobID jobId = attemptId.getJobID();
-
         try {
-          checkAccessForTaskLogs(new JobConf(jobACLConf), user, jobId,
-              taskTracker);
+          checkAccessForTaskLogs(jobACLConf, user,
+              jobId.toString(), taskTracker);
         } catch (AccessControlException e) {
           String errMsg = "User " + user + " failed to view tasklogs of job " +
               jobId + "!\n\n" + e.getMessage();
@@ -248,6 +264,7 @@ public class TaskLogServlet extends HttpServlet {
 
     OutputStream out = response.getOutputStream();
     if( !plainText ) {
+      response.setContentType("text/html; charset=utf-8");
       out.write(("<html>\n" +
                  "<title>Task Logs: '" + attemptId + "'</title>\n" +
                  "<body>\n" +
@@ -279,6 +296,7 @@ public class TaskLogServlet extends HttpServlet {
       response.sendError(HttpServletResponse.SC_BAD_REQUEST,
           "You must supply a value for `filter' (STDOUT, STDERR, or SYSLOG) if you set plainText = true");
     } else {
+      response.setContentType("text/plain; charset=utf-8");
       printTaskLog(response, out, attemptId, start, end, plainText, filter, 
                    isCleanup);
     } 

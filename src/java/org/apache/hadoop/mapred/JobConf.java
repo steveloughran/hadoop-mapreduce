@@ -45,7 +45,9 @@ import org.apache.hadoop.mapred.lib.HashPartitioner;
 import org.apache.hadoop.mapred.lib.KeyFieldBasedComparator;
 import org.apache.hadoop.mapred.lib.KeyFieldBasedPartitioner;
 import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.util.Tool;
 import org.apache.log4j.Level;
@@ -321,6 +323,8 @@ public class JobConf extends Configuration {
    */
   public static final String MAPRED_REDUCE_TASK_ENV = JobContext.REDUCE_ENV;
 
+  private Credentials credentials = new Credentials();
+  
   /**
    * Configuration key to set the logging {@link Level} for the map task.
    *
@@ -368,6 +372,12 @@ public class JobConf extends Configuration {
    */
   public JobConf(Configuration conf) {
     super(conf);
+    
+    if (conf instanceof JobConf) {
+      JobConf that = (JobConf)conf;
+      credentials = that.credentials;
+    }
+    
     checkAndWarnDeprecation();
   }
 
@@ -414,6 +424,18 @@ public class JobConf extends Configuration {
     checkAndWarnDeprecation();
   }
 
+  /**
+   * Get credentials for the job.
+   * @return credentials for the job
+   */
+  public Credentials getCredentials() {
+    return credentials;
+  }
+  
+  void setCredentials(Credentials credentials) {
+    this.credentials = credentials;
+  }
+  
   /**
    * Get the user jar for the map-reduce job.
    * 
@@ -1438,6 +1460,46 @@ public class JobConf extends Configuration {
   }
 
   /**
+   * Set JobSubmitHostName for this job.
+   * 
+   * @param hostname the JobSubmitHostName for this job.
+   */
+  void setJobSubmitHostName(String hostname) {
+    set(MRJobConfig.JOB_SUBMITHOST, hostname);
+  }
+  
+  /**
+   * Get the  JobSubmitHostName for this job.
+   * 
+   * @return the JobSubmitHostName for this job.
+   */
+  String getJobSubmitHostName() {
+    String hostname = get(MRJobConfig.JOB_SUBMITHOST);
+    
+    return hostname;
+  }
+
+  /**
+   * Set JobSubmitHostAddress for this job.
+   * 
+   * @param hostadd the JobSubmitHostAddress for this job.
+   */
+  void setJobSubmitHostAddress(String hostadd) {
+    set(MRJobConfig.JOB_SUBMITHOSTADDR, hostadd);
+  }
+  
+  /**
+   * Get JobSubmitHostAddress for this job.
+   * 
+   * @return  JobSubmitHostAddress for this job.
+   */
+  String getJobSubmitHostAddress() {
+    String hostadd = get(MRJobConfig.JOB_SUBMITHOSTADDR);
+    
+    return hostadd;
+  }
+
+  /**
    * Get whether the task profiling is enabled.
    * @return true if some tasks will be profiled
    */
@@ -1771,7 +1833,7 @@ public class JobConf extends Configuration {
    * @return a jar file that contains the class, or null.
    * @throws IOException
    */
-  private static String findContainingJar(Class my_class) {
+  static String findContainingJar(Class my_class) {
     ClassLoader loader = my_class.getClassLoader();
     String class_file = my_class.getName().replaceAll("\\.", "/") + ".class";
     try {
@@ -1783,6 +1845,13 @@ public class JobConf extends Configuration {
           if (toReturn.startsWith("file:")) {
             toReturn = toReturn.substring("file:".length());
           }
+          // URLDecoder is a misnamed class, since it actually decodes
+          // x-www-form-urlencoded MIME type rather than actual
+          // URL encoding (which the file path has). Therefore it would
+          // decode +s to ' 's which is incorrect (spaces are actually
+          // either unencoded or encoded as "%20"). Replace +s first, so
+          // that they are kept sacred during the decoding process.
+          toReturn = toReturn.replaceAll("\\+", "%2B");
           toReturn = URLDecoder.decode(toReturn, "UTF-8");
           return toReturn.replaceAll("!.*$", "");
         }

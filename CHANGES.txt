@@ -6,10 +6,150 @@ Trunk (unreleased changes)
 
   NEW FEATURES
 
+  IMPROVEMENTS
+
+    MAPREDUCE-2172. Added test-patch.properties required by test-patch.sh (nigel)
+
+    MAPREDUCE-2156. Raid-aware FSCK. (Patrick Kling via dhruba)
+
+    MAPREDUCE-2215. A more elegant FileSystem#listCorruptFileBlocks API
+    (RAID changes) (Patrick Kling via hairong)
+
+    MAPREDUCE-1831. BlockPlacement policy for HDFS-RAID.
+    (Scott Chen via dhruba)
+
+    MAPREDUCE-1906. Lower minimum heartbeat interval for TaskTracker
+    (Scott Carey and Todd Lipcon via todd)
+
+    MAPREDUCE-1382. MRAsyncDiscService should tolerate missing local.dir.
+    (Zheng Shao and tomwhite via tomwhite)
+
+    MAPREDUCE-2263. MapReduce side of HADOOP-6904: RPC compatibility.
+    (hairong)
+
+    MAPREDUCE-1706. Log RAID recoveries on HDFS. (schen)
+
+    MAPREDUCE-2334. Update BlockPlacementPolicyRaid for the new method
+    in BlockPlacementPolicy.  (szetszwo)
+
+    MAPREDUCE-2254. Allow setting of end-of-record delimiter for
+    TextInputFormat (Ahmed Radwan via todd)
+
+    MAPREDUCE-1927. Unit test for HADOOP-6835 (concatenated gzip support).
+    (Greg Roelofs via tomwhite)
+
+    MAPREDUCE-2206. The task-cleanup tasks should be optional. (schen)
+
+    MAPREDUCE-2225. MultipleOutputs should not require the use of 'Writable'.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-1811. Job.monitorAndPrintJob() should print status of the job
+    at completion. (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-993. bin/hadoop job -events <jobid> <from-event-#> <#-of-events>
+    help message is confusing. (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2302. Add static factory methods in GaloisField. (schen)
+
+    MAPREDUCE-2351. mapred.job.tracker.history.completed.location should
+    support an arbitrary filesystem URI. (tomwhite)
+
+    MAPREDUCE-2239. BlockPlacementPolicyRaid should call getBlockLocations
+    only when necessary. (schen)
+
+    MAPREDUCE-2331. Add coverage of task graph servlet to fair scheduler system
+    test. (todd)
+
+    MAPREDUCE-2367. Allow using a file to exclude certain tests from build.
+    (todd)
+    
+    MAPREDUCE-2367. Amend previous commit for this JIRA to fix build on Cygwin.
+    (todd)
+
+  OPTIMIZATIONS
+    
+    MAPREDUCE-2026. Make JobTracker.getJobCounters() and
+    JobInProgress.getCounters() aquire locks in a shorter time period.
+    (Joydeep Sen Sarma via schen)
+
+  BUG FIXES
+
+    MAPREDUCE-2199. build is broken 0.22 branch creation. (cos)
+
+    MAPREDUCE-1752. Implement getFileBlockLocations in HarFilesystem.
+    (Patrick Kling via dhruba)
+
+    MAPREDUCE-2155. RaidNode should optionally use the mapreduce jobs to 
+    fix missing blocks.  (Patrick Kling via dhruba)
+
+    MAPREDUCE-1334. Fix TestIndexUpdater by ignoring _SUCCESS file in HDFS.
+    (Kay Kay via yhemanth)
+
+    MAPREDUCE-2232. Add missing methods to TestMapredGroupMappingServiceRefresh.
+    (Todd Lipcon via eli)
+
+    MAPREDUCE-2271. Fix TestSetupTaskScheduling failure on trunk.
+    (Liyin Liang via todd)
+
+    MAPREDUCE-2290. Fix compilation error in TestTaskCommit. (eli)
+
+    MAPREDUCE-2294. Fix compilation error in mumak. (todd)
+
+    MAPREDUCE-2300. Fix TestUmbilicalProtocolWithJobToken on trunk after
+    HADOOP-6904. (todd)
+
+    MAPREDUCE-2296. Fix references to misspelled method name
+    getProtocolSigature (todd)
+
+    MAPREDUCE-2311. Fix TestFairScheduler failure (schen)
+
+    MAPREDUCE-1996. API: Reducer.reduce() method detail misstatement.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2203. Wrong javadoc for TaskRunner's appendJobJarClasspaths
+    method. (Jingguo Yao via tomwhite)
+
+    MAPREDUCE-2074. Task should fail when symlink creation fails.
+    (Priyo Mustafi via tomwhite)
+
+    MAPREDUCE-1242. Chain APIs error misleading.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2379. Adds missing DistributedCache configurations in 
+    mapred-default.xml (Todd Lipcon via amareshwari)
+
+    MAPREDUCE-2348. Disable mumak tests on trunk since they currently time out
+    (todd)
+
+Release 0.22.0 - Unreleased
+
+  INCOMPATIBLE CHANGES
+
+    MAPREDUCE-1866. Removes deprecated class
+    org.apache.hadoop.streaming.UTF8ByteArrayUtils. (amareshwari)
+
+    MAPREDUCE-1664. Changes the behaviour of the combination of job-acls
+    when they function together with queue-acls. (Ravi Gummadi via vinodkv)
+
+  NEW FEATURES
+
     MAPREDUCE-1804. Stress-test tool for HDFS introduced in HDFS-708.
     (Joshua Harlow via shv)
 
+    MAPREDUCE-220. Collect cpu and memory statistics per task. (Scott Chen via
+    acmurthy)
+
+    MAPREDUCE-1970.  Reed-Solomon code implementation for HDFS RAID.
+    (Scott Chen via dhruba)
+
+    MAPREDUCE-2169. Integrated Reed-Solomon code with RaidNode. (Ramkumar
+    Vadali via schen)
+
   IMPROVEMENTS
+
+    MAPREDUCE-2141. Add an "extra data" field to Task for use by Mesos. (matei)
+
+    MAPREDUCE-2140. Regenerate fair scheduler design doc PDF. (matei)
 
     MAPREDUCE-1546. Redirect all job pages to corresponding history page
     if job is not in JT memory. (Scott Chen via sharad)
@@ -26,9 +166,166 @@ Trunk (unreleased changes)
     MAPREDUCE-1539. authorization checks for inter-server protocol
     (based on HADOOP-6600) (Boris Shkolnik via shv)
 
+    MAPREDUCE-1798. Names the configuration keys for the Kerberos
+    principals better. (Boris Shkolnik via ddas)
+
+    MAPREDUCE-1773. streaming doesn't support jobclient.output.filter.
+    (Amareshwari Sriramadasu via vinodkv)
+
+    MAPREDUCE-1785. Add streaming config option for not emitting the key.
+    (Eli Collins via sharad)
+
+    MAPREDUCE-572. If #link is missing from uri format of -cacheArchive
+    then streaming does not throw error. (Amareshwari Sriramadasu via
+    vinodkv)
+
+    MAPREDUCE-1545. Add timestamps for first task type launched in job summary.
+    (Luke Lu via cdouglas)
+
+    MAPREDUCE-1543. Add an audit log for authentication events. (Amar Kamat and
+    Luke Lu via cdouglas)
+
+    MAPREDUCE-1762. Add ability to set values of task counters. (Scott Chen via
+    cdouglas)
+
+    MAPREDUCE-1533. Reduce overhead of logging and string manipulation during
+    heartbeat processing. (Amar Kamat and Dick King via cdouglas)
+
+    MAPREDUCE-1516. JobTracker issues delegation tokens only if the user's
+    authentication is Kerberos. (Jitendra Pandey via ddas)
+
+    MAPREDUCE-647. Update distcp forrest documentation to reflect the changes
+    of HADOOP-5472, MAPREDUCE-642 and HADOOP-5620.  (Rodrigo Schmidt via
+    szetszwo)
+
+    MAPREDUCE-1851. Documents configuration parameters in streaming.
+    (amareshwari)
+    
+    MAPREDUCE-1868. Add a read and connection timeout to JobClient while
+    pulling tasklogs. (Krishna Ramachandran via acmurthy)
+
+    MAPREDUCE-1788. Ensure failure to setup CompletedJobStatusStore is not
+    silently ignored by the JobTracker. (Krishna Ramachandran via acmurthy)
+
+    MAPREDUCE-1850. Includes job submit host information (name and ip) in
+    jobconf and jobdetails display (Krishna Ramachandran via amareshwari)
+
+    MAPREDUCE-1893. Slive with multiple reducers. (shv)
+
+    MAPREDUCE-1248. Fixes redudant memory copying in StreamKeyValUtil.
+    (Ruibang He via amareshwari)
+
+    MAPREDUCE-1840. Enhancements to Gridmix benchmark simulating user
+    diversity, queue replay, and task duration for JobTracker load testing.
+    Also includes compatibility with security enhancements, and scalability
+    improvements. (Amar Kamat, Rahul Singh, Hong Tang, and cdouglas)
+
+    MAPREDUCE-1848. Put number of speculative, data local, rack local 
+    tasks in JobTracker metrics. (Scott Chen via dhruba)
+
+    MAPREDUCE-1935. Makes the Distcp to work in a secure environment.
+    (Boris Shkolnik via ddas)
+
+    MAPREDUCE-1945. The MapReduce component for HADOOP-6632.
+    (Kan Zhang & Jitendra Pandey via ddas)
+
+    MAPREDUCE-1936. Modify Gridmix3 to support more tunable parameters for
+    stress submission and sleep jobs. (Hong Tang via cdouglas)
+
+    MAPREDUCE-1733. Makes pipes applications secure. (Jitendra Pandey via ddas)
+
+    MAPREDUCE-1566. Adds a configuration attribute using which job clients can
+    specify a credentials file. The tokens from there will be passed to the job.
+    (Jitendra Pandey and Owen O'Malley via ddas)
+
+    MAPREDUCE-1624. Documents the job credentials and associated details to do 
+    with delegation tokens (on the client side). 
+    (Jitendra Pandey and Devaraj Das via ddas)
+
+    MAPREDUCE-1834. TestSimulatorDeterministicReplay timesout on trunk.
+    (Hong Tang via mahadev)
+
+    MAPREDUCE-1993. Fixes test failure
+    TestTrackerDistributedCacheManagerWithLinuxTaskController. (Devaraj Das
+    via amareshwari)
+
+    MAPREDUCE-1523. Making Mumak work with Capacity-Scheduler (Anirban Das
+    via mahadev)
+
+    MAPREDUCE-1920. Enables completed jobstatus store by default. (Tom White
+    via amareshwari)
+
+    MAPREDUCE-1881. Improve TaskTrackerInstrumentation to enable collection of
+    advanced metrics. (Matei Zaharia via acmurthy)
+
+    MAPREDUCE-1548. Hadoop archives preserve times and other properties from 
+    original files. (Rodrigo Schmidt via dhruba)
+
+    MAPREDUCE-1517. Supports streaming job to run in the background. (Bochun Bai
+    via amareshwari)
+
+    MAPREDUCE-1819. RaidNode is now smarter in submitting Raid jobs. (Ramkumar
+    Vadali via schen)
+
+    MAPREDUCE-2132. A command line option in RaidShell to fix blocks using raid
+
+    MAPREDUCE-2147. Remove redundant lines in JobInProgress ctor.
+    (Harsh J Chouraria via cutting)
+   
+    HADOOP-7007. Update the hudson-test-patch ant target to work with the
+    latest test-patch.sh script (gkesavan)
+
+    MAPREDUCE-1818. RaidNode can specify scheduling parameters. (Ramkumar
+    Vadali via schen)
+
+    MAPREDUCE-2051. Contribute a fair scheduler preemption system test.
+    (Todd Lipcon via tomwhite)
+
+    MAPREDUCE-1892. RaidNode can allow layered policies more efficiently.
+    (Ramkumar Vadali via schen)
+
+    MAPREDUCE-1592. Generate Eclipse's .classpath file from Ivy config. 
+    (tomwhite via nigel)
+
+    MAPREDUCE-2073. TestTrackerDistributedCacheManager should be up-front
+    about requirements on build environment. (Todd Lipcon via tomwhite)
+
+    MAPREDUCE-2093. Herriot JT and TT clients should vend statistics. (cos)
+
+    MAPREDUCE-2167. Faster directory traversal for raid node. (Ramkumar Vadali
+    via schen)
+
+    MAPREDUCE-1931. Gridmix forrest documentation . (Ranjit Mathew via vinodkv).
+
+    MAPREDUCE-2184. Port DistRaid.java to new mapreduce API. (Ramkumar Vadali
+    via schen)
+
+    MAPREDUCE-1878. Add MRUnit documentation. (Aaron Kimball via tomwhite)
+
+    MAPREDUCE-2180. Add coverage of fair scheduler servlet to system test (todd)
+
+    MAPREDUCE-2250. Fix logging in raid code. (Ramkumar Vadali via schen)
+
+    MAPREDUCE-2260. Remove auto-generated native build files. (rvs via eli)
+
+    MAPREDUCE-2314. configure files that are generated as part of the released
+    tarball need to have executable bit set (rvs via cos)
+
+    MAPREDUCE-1159.  Limit Job name in web UI to be 80 char long.  (Harsh J
+    Chouraria via szetszwo)
+
   OPTIMIZATIONS
 
+    MAPREDUCE-1354. Enhancements to JobTracker for better performance and
+    scalability. (Arun C. Murthy & Richard King via acmurthy) 
+
+    MAPREDUCE-1829. JobInProgress.findSpeculativeTask should use min() to
+    find the candidate instead of sort(). (Scott Chen via vinodkv)
+
   BUG FIXES
+
+    MAPREDUCE-1845. FairScheduler.tasksToPreempt() can return negative number.
+    (Scott Chen via matei)
 
     MAPREDUCE-1707. TaskRunner can get NPE in getting ugi from TaskTracker.
     (Vinod Kumar Vavilapalli)
@@ -47,7 +344,340 @@ Trunk (unreleased changes)
     MAPREDUCE-1617. Use IPv4 stack for unit tests. (Amar Kamat and Luke Lu via
     cdouglas)
 
-Release 0.21.0 - Unreleased
+    MAPREDUCE-1599. Fixes MRBench so that it reuses tokens across jobs
+    correctly. (Jitendra Nath Pandey via ddas)
+
+    MAPREDUCE-1836. Refresh for proxy superuser config (mr part for HDFS-1096).
+    (Boris Shkolnik via shv)
+
+    MAPREDUCE-1505. Create RPC client on job submission, not in cstr of Job
+    instance. (Dick King via cdouglas)
+
+    MAPREDUCE-1813. NPE in PipeMapred.MRErrorThread. (Ravi Gummadi via vinodkv)
+
+    MAPREDUCE-1225. Fixes DistributedCache to check if the file is fresh or not,
+    for the first localization also. (Zhong Wang via amareshwari)
+
+    MAPREDUCE-1559. Fixes the token renewer to use the JobTracker's 
+    credentials for talking to the NameNode. (ddas)
+
+    MAPREDUCE-1492. Delete  obsolete har files used on the parity files
+    of hdfs raid. (Rodrigo Schmidt via dhruba)
+
+    MAPREDUCE-1857. Removes unused configuration parameters in streaming.
+    (amareshwari)
+
+    MAPREDUCE-1887. MRAsyncDiskService now properly absolutizes volume root
+    paths. (Aaron Kimball via zshao)
+
+    MAPREDUCE-1863. Fix NPE in Rumen when processing null CDF for failed task
+    attempts. (Amar Kamat via cdouglas)
+
+    MAPREDUCE-1864. Removes uninitialized/unused variables in
+    org.apache.hadoop.streaming.PipeMapRed. (amareshwari)
+
+    MAPREDUCE-1888. Fixes Streaming to override output key and value types, 
+    only if mapper/reducer is a command. (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-577. Fixes duplicate records in StreamXmlRecordReader.
+    (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-1894. Fixed a bug in DistributedRaidFileSystem.readFully() 
+    that was causing it to loop infinitely. (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-1838. Reduce the time needed for raiding a bunch of files
+    by randomly assigning files to map tasks. (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-1820. Fix InputSampler to clone sampled keys. (Alex Kozlov via
+    cdouglas)
+
+    MAPREDUCE-1528. Incorporates the changes to the credentials API done in
+    HADOOP-6845. Also, introduces Credentials in JobConf, and in JobContext.
+    (Jitendra Pandey and Arun Murthy via ddas)
+
+    MAPREDUCE-1865. Rumen should also support jobhistory files generated using
+    trunk. (Amar Kamat via amareshwari)
+
+    MAPREDUCE-1621. Fixes NPE in TextOutputReader.getLastOutput if it has never
+    read any output. (amareshwari)
+
+    MAPREDUCE-1911. Fixes errors in -info message in streaming. (amareshwari) 
+
+    MAPREDUCE-1772. Corrects errors in streaming documentation in forrest.
+    (amareshwari)
+
+    MAPREDUCE-1925. Fix failing TestRumenJobTraces. (Ravi Gummadi via cdouglas)
+
+    MAPREDUCE-1718. Fixes a bug in the construction of jobconf key for the
+    mapping that the tasks use at runtime for looking up delegation tokens.
+    (Boris Shkolnik via ddas)
+
+    MAPREDUCE-1701. Fixes a problem to do with exception handling in 
+    delegation-token renewals. (Boris Shkolnik via ddas)
+
+    MAPREDUCE-1686. Fixes StreamUtil.goodClassOrNull to find classes without
+    package names. (Paul Burkhardt via amareshwari)
+
+    MAPREDUCE-1288. Fixes TrackerDistributedCacheManager to take into account
+    the owner of the localized file in the mapping from cache URIs to
+    CacheStatus objects. (ddas)
+
+    MAPREDUCE-1982. Fixes Rumen's TraceBuilder to extract job name from either 
+    of configuration properties "mapreduce.job.name" and "mapred.job.name".
+    (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-1958. The MapReduce part corresponding to the HADOOP-6873.
+    (Boris Shkolnik & Owen O'Malley via ddas)
+
+    MAPREDUCE-1900. TaskTracker and JobTracker closes FileSystems, opened on
+    behalf of users that it no longer requires. (Kan Zhang and ddas via ddas)
+
+    MAPREDUCE-1992. Fixes a problem to do with bringing up the JobTracker in
+    unsecure mode. (Kan Zhang via ddas)
+
+    MAPREDUCE-1999. Fixes ClientProtocol to use the correct 
+    DelegationTokenSelector. (Jitendra Pandey via ddas)
+
+    MAPREDUCE-1780. AccessControlList.toString() is used for serialization of
+    ACL in JobStatus.java. (Ravi Gummadi via vinodkv)
+
+    MAPREDUCE-1961. Fix ConcurrentModificationException in Gridmix during
+    shutdown. (Hong Tang via cdouglas)
+
+    MAPREDUCE-2000. Fix parsing of JobHistory lines in Rumen when quotes are
+    escaped. (Hong Tang via cdouglas)
+
+    MAPREDUCE-2022. Fixes compilation errors in TestSubmitJob. (amareshwari)
+
+    MAPREDUCE-1670. RAID policies should not scan their own destination path.
+    (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-1668. RaidNode Hars a directory only if all its parity files 
+    have been created. (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-2021. Fixes duplicate hostnames in CombineFileInputFormat's
+    split locations. (amareshwari)
+
+    MAPREDUCE-1375. Fixes flaky test TestFileArgs. (Todd Lipcon via
+    amareshwari)
+
+    MAPREDUCE-2023. TestDFSIO should not stop reading if curSize != bufferSize.
+    (Hong Tang via szetszwo)
+
+    MAPREDUCE-2031. Fixes test failures TestTaskLauncher and
+    TestTaskTrackerLocalization. (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-2046. Fixes CombineFileInputFormat to allow splits with size
+    less than DFS block size. (dhruba borthakur via amareshwari)
+
+    MAPREDUCE-1975. Fixes unnecessary InterruptedException log in gridmix.
+    (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-1597. Fixes CombineFileInputFormat to work with non-splittable
+    files. (amareshwari)
+
+    MAPREDUCE-2032. Fixes TestJobCleanup to cleanup test directory in
+    tearDown. (Dick King via amareshwari)
+
+    MAPREDUCE-1979. Fixes "Output directory already exists" error in gridmix
+    when gridmix.output.directory is not defined. (Ravi Gummadi via
+    amareshwari)
+
+    MAPREDUCE-1918. Adds documentation to Rumen. (Amar Kamat via amareshwari)
+
+    MAPREDUCE-2078. Fixes TraceBuilder to generate traces when a globbed job
+    history path is given. (Amar Kamat via amareshwari)
+
+    MAPREDUCE-1989. Fixes error message in gridmix when user resolver is set
+    and no user list is given. (Ravi Gummadi via amareshwari)
+
+    MAPREDUCE-2067.  Distinct minicluster services (e.g. NN and JT) overwrite
+    each other's service policies.  (Aaron T. Myers via tomwhite)
+
+    MAPREDUCE-2029. DistributedRaidFileSystem removes itself from FileSystem
+    cache when it is closed. (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-1816. HAR files used for RAID parity-bite have configurable 
+    partfile size. (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-2082. Fixes Pipes to create the jobtoken file in the right
+    place. (Jitendra Pandey via ddas)
+
+    MAPREDUCE-2095. Fixes Gridmix to run from compressed traces. (Ranjit
+    Mathew via amareshwari)
+
+    MAPREDUCE-1908. DistributedRaidFileSystem now handles ChecksumException
+    correctly. (Ramkumar Vadali via schen)
+
+    MAPREDUCE-2126. JobQueueJobInProgressListener's javadoc is inconsistent
+    with source code. (Jingguo Yao via tomwhite)
+
+    MAPREDUCE-2143.  HarFileSystem is able to handle spaces in pathnames.
+    (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-1867.  Remove unused methods in
+    org.apache.hadoop.streaming.StreamUtil.  (amareshwari via tomwhite)
+
+    MAPREDUCE-2146.  Raid does not affect access time of a source file.
+    (Ramkumar Vadali via dhruba)
+
+    MAPREDUCE-2150.  RaidNode periodically fixes corrupt blocks. (Ramkumar Vadali via
+    schen)
+
+    MAPREDUCE-2099.  RaidNode recreates outdated parity HARs. (Ramkumar Vadali
+    via schen)
+
+    MAPREDUCE-2173.  Fix race condition in TestBlockFixer that was
+    causing  intermittent failure (Patrick Kling via dhruba)
+
+    MAPREDUCE-2142.  Refactor RaidNode so that the map-reduce component is
+    clearly separated out. (Patrick Kling via dhruba)
+
+    MAPREDUCE-2179. Fix RaidBlockSender compilation failure. (Ramkumar Vadali
+    via schen)
+
+    MAPREDUCE-2034. TestSubmitJob triggers NPE instead of permissions error.
+    (Todd Lipcon via tomwhite)
+
+    MAPREDUCE-2195. New property for local conf directory in
+    system-test-mapreduce.xml file. (cos)
+
+    MAPREDUCE-1783. FairScheduler initializes tasks only when the job can be
+    run. (Ramkumar Vadali via schen)
+
+    MAPREDUCE-2224. Fix synchronization bugs in JvmManager. (todd)
+
+    MAPREDUCE-714. JobConf.findContainingJar unescapes unnecessarily on linux (todd)
+
+    MAPREDUCE-2096. Secure local filesystem IO from symlink vulnerabilities (todd)
+
+    MAPREDUCE-2234. If Localizer can't create task log directory, it should fail
+    on the spot. (todd)
+
+    MAPREDUCE-2219. JobTracker should not try to remove mapred.system.dir
+    during startup. (todd)
+
+    MAPREDUCE-2207. Task-cleanup task should not be scheduled on the node that
+    the task just failed. (Liyin Liang via schen)
+
+    MAPREDUCE-2084. Remove deprecate annotation for package file.  The package
+    classes themselves are already deprecated. This removes an Eclipse error.
+    (tomwhite via nigel)
+
+    MAPREDUCE-2248. DistributedRaidFileSystem should unraid only the corrupt
+    block (Ramkumar Vadali via schen)
+
+    MAPREDUCE-1085. For tasks, "ulimit -v -1" is being run when user doesn't
+    specify a ulimit (todd)
+
+    MAPREDUCE-2282. Fix TestMRServerPorts for the changes in
+    TestHDFSServerPorts.  (shv via szetszwo)
+
+    MAPREDUCE-2238. Fix permissions handling to avoid leaving undeletable
+    directories in local dirs. (todd)
+
+    MAPREDUCE-2277. TestCapacitySchedulerWithJobTracker needs to wait for jobs
+    to complete before testing status. (todd)
+
+    MAPREDUCE-2253. Servlets should specify content type (todd)
+
+    MAPREDUCE-2283. Add timeout for Raid Tests (Ramkumar Vadali via schen)
+
+    MAPREDUCE-1754. Replace mapred.persmissions.supergroup with an 
+    acl : mapreduce.cluster.administrators (Amareshwari Sriramadasu via shv)
+
+    MAPREDUCE-2256. FairScheduler fairshare preemption from multiple pools may
+    preempt all tasks from one pool causing that pool to go below fairshare.
+    (Priyo Mustafi via shv)
+
+    MAPREDUCE-2281. MR part of HADOOP-6642. (Chris Douglas, Po Cheung via shv)
+
+    MAPREDUCE-2200. TestUmbilicalProtocolWithJobToken is failing without Krb
+    evironment: needs to be conditional. (cos)
+
+    MAPREDUCE-2077. Resolve name clash in the deprecated 
+    o.a.h.util.MemoryCalculatorPlugin (Luke Lu via shv)
+
+    MAPREDUCE-2188. The new API MultithreadedMapper doesn't initialize
+    RecordReader. (Owen O'Malley via shv)
+
+    MAPREDUCE-1915. Fix IndexOutOfBoundsException in IndexCache.
+    (Priyo Mustafi via shv)
+
+    MAPREDUCE-1974. Fix multiple preemtions of the same task in FairScheduler.
+    (Scott Chen via shv)
+
+    MAPREDUCE-2304. Fix TestMRCLI to allow hostname with a hyphen (-).
+    (Priyo Mustafi via shv)
+
+    MAPREDUCE-1825. jobqueue_details.jsp and FairSchedulerServelet should not
+    call finishedMaps and finishedReduces when job is not initialized.
+    (Scott Chen via shv)
+
+    MAPREDUCE-2285. MiniMRCluster does not start after ant test-patch
+    (todd)
+
+    MAPREDUCE-2315. javadoc is failing in nightly build (todd)
+
+    MAPREDUCE-2054. Hierarchical queue implementation broke dynamic queue
+    addition in Dynamic Scheduler. (Thomas Sandholm via tomwhite)
+
+    MAPREDUCE-2272. Job ACL file should not be executable
+    (Harsh J Chouraria via todd)
+
+    MAPREDUCE-2241. ClusterWithLinuxTaskController should accept relative path
+    on the command line. (todd)
+
+    MAPREDUCE-2251. Remove unused mapreduce.job.userhistorylocation config.
+    (Harsh J Chouraria via todd)
+
+    MAPREDUCE-2284. TestLocalRunner.testMultiMaps times out (todd)
+
+    MAPREDUCE-2336. Tool-related packages should be in the Tool javadoc group.
+    (tomwhite)
+    
+    MAPREDUCE-2394. JUnit output format doesn't propagate into raid contrib
+    build. (todd)
+
+    MAPREDUCE-2392. TaskTracker shutdown in the tests sometimes take 60s.
+    (tomwhite)
+
+Release 0.21.1 - Unreleased
+
+  NEW FEATURES
+
+    MAPREDUCE-2040. Forrest Documentation for Dynamic Priority Scheduler.
+    (Thomas Sandholm via tomwhite)
+
+  BUG FIXES
+
+    MAPREDUCE-1897. trunk build broken on compile-mapred-test (cos)
+
+    MAPREDUCE-1280. Update Eclipse plugin to the new eclipse.jdt API.
+    (Alex Kozlov via szetszwo)
+
+    MAPREDUCE-1984. herriot TestCluster fails because exclusion is not there
+    (Balaji Rajagopalan via cos)
+
+    MAPREDUCE-2090. Clover build doesn't generate per-test coverage. (cos)
+
+    MAPREDUCE-2134. ant binary-system is broken in mapreduce project. (cos)
+
+    MAPREDUCE-1905. Fixes Context.setStatus() and progress() apis.
+    (amareshwari)
+
+    MAPREDUCE-1809. Ant build changes for Streaming system tests in contrib
+    projects. (Vinay Kumar Thota via amareshwari)
+
+    MAPREDUCE-2223. TestMRCLI might fail on Ubuntu with default /etc/hosts
+    (cos)
+
+    MAPREDUCE-2228. Remove java5 dependencies from build. (cos)
+
+    MAPREDUCE-1929. Allow artifacts to be published to the staging Apache Nexus
+    Maven Repository. (tomwhite)
+
+Release 0.21.0 - 2010-08-13
 
   INCOMPATIBLE CHANGES
 
@@ -97,12 +727,19 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1493. Authorization for job-history pages. (vinodkv)
 
-    MAPREDUCE-1644. Remove Sqoop contrib module. (Aaron Kimball via cdouglas)
-
     MAPREDUCE-1607. Task controller may not set permissions for a
     task cleanup attempt's log directory (Amareshwari Sriramadasu via vinodkv)
 
+    MAPREDUCE-1683. Remove JNI calls from ClusterStatus cstr. (Arun Murthy and
+    Luke Lu via cdouglas)
+
+    MAPREDUCE-1855. Makes the refresh methods (for groups and proxy users) 
+    independent of the client side configuration. (Boris Shkolnik via ddas)
+
   NEW FEATURES
+
+    MAPREDUCE-1774. Large-scale Automated Framework (Sharad Agarwal, Sreekanth
+    Ramakrishnan, Konstantin Boudnik, at all via cos)
 
     MAPREDUCE-706. Support for FIFO pools in the fair scheduler.
     (Matei Zaharia)
@@ -111,9 +748,6 @@ Release 0.21.0 - Unreleased
     it by default if no other config file is specified. (Matei Zaharia)
 
     MAPREDUCE-551. Preemption support in the Fair Scheduler. (Matei Zaharia)
-
-    HADOOP-5887. Sqoop should create tables in Hive metastore after importing
-    to HDFS. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-567. Add a new example MR that always fails. (Philip Zeyliger
     via tomwhite)
@@ -135,9 +769,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-740. Log a job-summary at the end of a job, while allowing it
     to be configured to use a custom appender if desired. (acmurthy)
 
-    MAPREDUCE-705. User-configurable quote and delimiter characters for Sqoop
-    records and record reparsing. (Aaron Kimball via tomwhite)
-
     MAPREDUCE-814. Provide a way to configure completed job history files 
     to be on HDFS. (sharad)
 
@@ -156,8 +787,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-751. Add Rumen, a tool for extracting statistics from job tracker
     logs and generating job traces for simulation and analysis. (Dick King via
     cdouglas)
-
-    MAPREDUCE-938. Postgresql support for Sqoop. (Aaron Kimball via tomwhite)	
 
     MAPREDUCE-830. Add support for splittable compression to TextInputFormats.
     (Abdul Qadeer via cdouglas)
@@ -195,15 +824,9 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-698. Per-pool task limits for the fair scheduler.
     (Kevin Peterson via matei)
 
-    MAPREDUCE-1017. Compression and output splitting for Sqoop.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-1026. Does mutual authentication of the shuffle
     transfers using a shared JobTracker generated key.
     (Boris Shkolnik via ddas)
-
-    MAPREDUCE-1168. Export data to databases via Sqoop. (Aaron Kimball via
-    tomwhite)
 
     MAPREDUCE-744. Introduces the notion of a public distributed cache.
     (Devaraj Das)
@@ -228,9 +851,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1433. Add a delegation token for MapReduce. (omalley)
 
-    MAPREDUCE-1341. Sqoop should have an option to create hive tables and
-    skip the table import step. (Leonid Furman via tomwhite)
-
     MAPREDUCE-1307. Introduces the Job level ACLs feature. 
     (Vinod Kumar Vavilapalli via ddas)
 
@@ -240,19 +860,7 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1455. Introduces job-level authorization for mapreduce servlets.
     (Ravi Gummadi via vinodkv)
 
-    MAPREDUCE-1446. Sqoop should support CLOB and BLOB datatypes.
-    (Aaron Kimball via tomwhite)
-
   IMPROVEMENTS
-
-    MAPREDUCE-816. Rename "local" mysql import to "direct" in Sqoop.
-    (Aaron Kimball via matei)
-
-    HADOOP-5967. Sqoop should only use a single map task. (Aaron Kimball via
-    tomwhite)
-
-    HADOOP-5968. Sqoop should only print a warning about mysql import speed
-    once. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-463. Makes job setup and cleanup tasks as optional.
     (Amareshwari Sriramadasu via sharad)
@@ -283,23 +891,11 @@ Release 0.21.0 - Unreleased
     test for o.a.h.mapreduce.lib.MultithreadedMapper.
     (Amareshwari Sriramadasu via sharad)
 
-    MAPREDUCE-692. Make Hudson run Sqoop unit tests.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-701. Improves the runtime of the TestRackAwareTaskPlacement
     by making it a unit test.  (Jothi Padmanabhan via ddas)
 
-    MAPREDUCE-674. Sqoop should allow a "where" clause to avoid having to
-    export entire tables. (Kevin Weil via tomwhite)
-
-    MAPREDUCE-675. Sqoop should allow user-defined class and package names.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-371. Change KeyFieldBasedComparator and KeyFieldBasedPartitioner
     to use new api. (Amareshwari Sriramadasu via sharad)
-
-    MAPREDUCE-713. Sqoop has some superfluous imports. (Aaron Kimball via
-    tomwhite)
 
     MAPREDUCE-623. Resolve javac warnings in mapreduce. (Jothi Padmanabhan
     via sharad)
@@ -309,9 +905,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-632. Merge TestCustomOutputCommitter with 
     TestCommandLineJobSubmission. (Jothi Padmanabhan via sharad)
-
-    MAPREDUCE-710. Sqoop should read and transmit passwords in a more secure
-    manner. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-627. Improves execution time of TestTrackerBlacklistAcrossJobs.
     (Jothi Padmanabhan via ddas)
@@ -371,8 +964,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-779. Added node health failure counts into 
     JobTrackerStatistics. (Sreekanth Ramakrishnan via yhemanth)
 
-    MAPREDUCE-789. Oracle support for Sqoop. (Aaron Kimball via tomwhite)
-
     MAPREDUCE-842. Setup secure permissions for localized job files,
     intermediate outputs and log files on tasktrackers.
     (Vinod Kumar Vavilapalli via yhemanth)
@@ -399,9 +990,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-870. Remove the job retire thread and the associated 
     config parameters. (sharad)
 
-    MAPREDUCE-749. Make Sqoop unit tests more Hudson-friendly.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-874. Rename the PiEstimator example to QuasiMonteCarlo.
     (szetszwo)
 
@@ -420,9 +1008,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-476. Extend DistributedCache to work locally (LocalJobRunner).
     (Philip Zeyliger via tomwhite)
-
-    MAPREDUCE-750. Extensible ConnManager factory API. (Aaron Kimball via
-    tomwhite)
 
     MAPREDUCE-825. JobClient completion poll interval of 5s causes slow tests
     in local mode. (Aaron Kimball via tomwhite)
@@ -446,12 +1031,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-898. Changes DistributedCache to use the new API.
     (Amareshwari Sriramadasu via ddas)
-
-    MAPREDUCE-876. Sqoop import of large tables can time out.
-    (Aaron Kimball via tomwhite)
-
-    MAPREDUCE-918. Test hsqldb server should be memory-only.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-144. Includes dump of the process tree in task diagnostics when 
     a task is killed due to exceeding memory limits.
@@ -489,9 +1068,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-284. Enables ipc.client.tcpnodelay in Tasktracker's Child.
     (Ravi Gummadi via sharad)
-
-    MAPREDUCE-907. Sqoop should use more intelligent splits. (Aaron Kimball
-    via tomwhite)
 
     MAPREDUCE-916. Split the documentation to match the project split.
     (Corinne Chandel via omalley)
@@ -568,11 +1144,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-707. Provide a jobconf property for explicitly assigning a job to 
     a pool in the Fair Scheduler. (Alan Heirich via matei)
 
-    MAPREDUCE-999. Improve Sqoop test speed and refactor tests.
-    (Aaron Kimball via tomwhite)
-
-    MAPREDUCE-906. Update Sqoop documentation. (Aaron Kimball via cdouglas)
-
     MAPREDUCE-947. Added commitJob and abortJob apis to OutputCommitter.
     Enhanced FileOutputCommitter to create a _SUCCESS file for successful
     jobs. (Amar Kamat & Jothi Padmanabhan via acmurthy) 
@@ -585,18 +1156,10 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1090. Modified log statement in TaskMemoryManagerThread to
     include task attempt id. (yhemanth)
 
-    MAPREDUCE-1069. Implement Sqoop API refactoring. (Aaron Kimball via
-    tomwhite)
-
-    MAPREDUCE-1036. Document Sqoop API. (Aaron Kimball via cdouglas)
-
     MAPREDUCE-1189. Reduce ivy console output to ovservable level (cos)
 
     MAPREDUCE-1167. ProcfsBasedProcessTree collects rss memory information.
     (Scott Chen via dhruba)
-
-    MAPREDUCE-1169. Improvements to mysqldump use in Sqoop.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1231. Added a new DistCp option, -skipcrccheck, so that the CRC
     check during setup can be skipped.  (Jothi Padmanabhan via szetszwo)
@@ -657,9 +1220,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-361. Port terasort example to the new mapreduce API. (Amareshwari
     Sriramadasu via cdouglas)
 
-    MAPREDUCE-1356. Allow user-specified hive table name in sqoop.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-1367. LocalJobRunner should support parallel mapper execution.
     (Aaron Kimball via tomwhite)
 
@@ -676,9 +1236,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1441. Trim whitespace from directory lists pulled from the
     configuration. (Todd Lipcon via cdouglas)
-
-    MAPREDUCE-1445. Refactor Sqoop tests to support better ConnManager testing.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1309. Refactor Rumen trace generator to improve code structure
     and add extensible support for log formats. (Dick King via cdouglas)
@@ -774,6 +1331,33 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1623. Apply audience and stability notations to Hadoop
     Map-Reduce. (tomwhite via acmurthy) 
 
+    MAPREDUCE-1751. Change MapReduce to depend on Hadoop 'common' artifacts
+    instead of 'core'. (tomwhite)
+
+    MAPREDUCE-1535.  Replace usage of FileStatus#isDir().  (Eli Collins via
+    tomwhite)
+
+    MAPREDUCE-1832. Allow file sizes less than 1MB in DFSIO benchmark. (shv)
+
+    MAPREDUCE-1404.  Move Cluster-Setup and Single-Node-Setup Docs from
+    MapReduce to Common.  (tomwhite)
+
+    MAPREDUCE-1697. Document the behavior of -file option and deprecate it
+    in favour of -files option in streaming. (Amareshwari Sriramadasu
+    via vinodkv)
+
+    MAPREDUCE-1033. Resolve location of scripts and configuration files after
+    project split. (tomwhite)
+
+    MAPREDUCE-1018. Document changes to the memory management and scheduling
+    model. (Hemanth Yamijala via vinodkv)
+
+    MAPREDUCE-1896. [Herriot] New property for multi user list. (Vinay Thota
+    via cos)
+
+    MAPREDUCE-1812. New properties for suspend and resume process. (Vinay
+    Thota via cos)
+
   OPTIMIZATIONS
 
     MAPREDUCE-270. Fix the tasktracker to optionally send an out-of-band
@@ -781,15 +1365,9 @@ Release 0.21.0 - Unreleased
     Configuration changes:
       add mapreduce.tasktracker.outofband.heartbeat 
 
-    MAPREDUCE-1224. Calling "SELECT t.* from <table> AS t" to get meta
-    information is too expensive for big tables. (Spencer Ho via tomwhite)
-
     MAPREDUCE-1186. Modified code in distributed cache to set permissions
     only on required set of localized paths.
     (Amareshwari Sriramadasu via yhemanth)
-
-    MAPREDUCE-1467. Add a --verbose flag to Sqoop.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1501. FileInputFormat supports multi-level, recursive 
     directory listing.  (Zheng Shao via dhruba)
@@ -802,13 +1380,13 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1610. Forrest documentation should be updated to reflect
     the changes in MAPREDUCE-856. (Ravi Gummadi via vinodkv)
 
+    MAPREDUCE-1853. Adds caching for TaskAttemptContext in MultipleOutputs.
+    (Torsten Curdt via amareshwari)
+
   BUG FIXES
 
     MAPREDUCE-878. Rename fair scheduler design doc to 
     fair-scheduler-design-doc.tex and add Apache license header (matei)
-
-    MAPREDUCE-703. Sqoop requires dependency on hsqldb in ivy.
-    (Aaron Kimball via matei)
 
     HADOOP-4687. MapReduce is split from Hadoop Core. It is a subproject under 
     Hadoop (Owen O'Malley)
@@ -841,14 +1419,8 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-124. Fix a bug in failure handling of abort task of 
     OutputCommiter. (Amareshwari Sriramadasu via sharad)
 
-    MAPREDUCE-673. Sqoop depends on commons-cli, which is not in its ivy.xml.
-    (Kevin Weil via tomwhite)
-
     MAPREDUCE-694. Fix to add jsp-api jars to capacity-scheduler classpath.
     (Giridharan Kesavan)
-
-    MAPREDUCE-690. Sqoop's test "hive" script needs to be executable.
-    (Aaron Kimball via tomwhite)
     
     MAPREDUCE-702. Fix eclipse-plugin jar target (Giridharan Kesavan) 
 
@@ -880,9 +1452,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-732. Removed spurious log statements in the node
     blacklisting logic. (Sreekanth Ramakrishnan via yhemanth)
-
-    MAPREDUCE-685. Sqoop will fail with OutOfMemory on large tables
-    using mysql. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-734. Fix a ConcurrentModificationException in unreserving
     unused reservations for a job when it completes.
@@ -1089,9 +1658,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-941. Vaidya script fails on Solaris. (Chad Metcalf
     via tomwhite)
 
-    MAPREDUCE-923. Sqoop classpath breaks for jar files with a
-    plus sign in their names. (Aaron Kimball via tomwhite)
-
     MAPREDUCE-912. Add and standardize Apache license headers. (Chad Metcalf
     via cdouglas)
 
@@ -1159,9 +1725,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1038. Weave Mumak aspects only if related files have changed.
     (Aaron Kimball via cdouglas)
-
-    MAPREDUCE-1037. Continue running contrib tests if Sqoop tests fail. (Aaron
-    Kimball via cdouglas)
 
     MAPREDUCE-1163. Remove unused, hard-coded paths from libhdfs. (Allen
     Wittenauer via cdouglas)
@@ -1346,19 +1909,10 @@ Release 0.21.0 - Unreleased
     parameter instead of using FileStatus.class.  (Peter Romianowski via
     szetszwo)
 
-    MAPREDUCE-1148. SQL identifiers are a superset of Java identifiers.
-    (Aaron Kimball via tomwhite)
-
     MAPREDUCE-1294. Build fails to pull latest hadoop-core-* artifacts (cos)
 
     MAPREDUCE-1213. TaskTrackers restart is faster because it deletes
     distributed cache directory asynchronously. (Zheng Shao via dhruba)
-
-    MAPREDUCE-1146. Sqoop dependencies break Eclipse build on Linux.
-    (Aaron Kimball via tomwhite)
-
-    MAPREDUCE-1174. Sqoop improperly handles table/column names which are
-    reserved sql words. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1265. The task attempt error log prints the name of the 
     tasktracker machine. (Scott Chen via dhruba)
@@ -1367,9 +1921,6 @@ Release 0.21.0 - Unreleased
     (Scott Chen via dhruba)
 
     MAPREDUCE-1326. fi tests don't use fi-site.xml (cos)
-
-    MAPREDUCE-1235. Fix a MySQL timestamp incompatibility in Sqoop. (Aaron
-    Kimball via cdouglas)
 
     MAPREDUCE-1165. Replace non-portable function name with C99 equivalent.
     (Allen Wittenauer via cdouglas)
@@ -1385,26 +1936,11 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1155. Streaming tests swallow exceptions.
     (Todd Lipcon via tomwhite)
 
-    MAPREDUCE-1310. CREATE TABLE statements for Hive do not correctly specify
-    delimiters. (Aaron Kimball via tomwhite)
-
     MAPREDUCE-1212. Mapreduce contrib project ivy dependencies are not included
     in binary target. (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1388. Move the HDFS RAID package from HDFS to MAPREDUCE.
     (Eli Collins via dhruba)
-
-    MAPREDUCE-1313. Fix NPE in Sqoop when table with null fields uses escape
-    during import. (Aaron Kimball via cdouglas)
-
-    MAPREDUCE-1327. Fix Sqoop handling of Oracle timezone with timestamp data
-    types in import. (Leonid Furman via cdouglas)
-
-    MAPREDUCE-1394. Sqoop generates incorrect URIs in paths sent to Hive.
-    (Aaron Kimball via tomwhite)
-
-    MAPREDUCE-1395. Sqoop does not check return value of Job.waitForCompletion().
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1322. Defines default value for staging directory to be user
     based fixing a failing streaming test.
@@ -1424,9 +1960,6 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1399. The archive command shows a null error message (nicholas
     via mahadev)
-
-    MAPREDUCE-1469. Sqoop should disable speculative execution in export.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1305. Improve efficiency of distcp -delete. (Peter Romianowski
     via cdouglas)
@@ -1451,9 +1984,6 @@ Release 0.21.0 - Unreleased
     MAPREDUCE-1398. Fix TaskLauncher to stop waiting for slots on a TIP that
     is killed / failed.
     (Amareshwari Sriramadasu via yhemanth)
-
-    MAPREDUCE-1444. Sqoop ConnManager instances can leak Statement objects.
-    (Aaron Kimball via tomwhite)
 
     MAPREDUCE-1491. The parity files created by the RAID are combined
     using Hadoop Archive Files (HAR).  (Rodrigo Schmidt via dhruba)
@@ -1605,3 +2135,51 @@ Release 0.21.0 - Unreleased
 
     MAPREDUCE-1276. Correct flaws in the shuffle related to connection setup
     and failure attribution. (Amareshwari Sriramadasu via cdouglas)
+
+    MAPREDUCE-1372. ConcurrentModificationException in JobInProgress.
+    (Dick King and Amareshwari Sriramadasu via tomwhite)
+
+    MAPREDUCE-118. Fix Job.getJobID(). (Amareshwari Sriramadasu via sharad)
+
+    MAPREDUCE-913. TaskRunner crashes with NPE resulting in held up slots,
+    UNINITIALIZED tasks and hung TaskTracker. (Amareshwari Sriramadasu and
+    Sreekanth Ramakrishnan via vinodkv)
+
+    MAPREDUCE-1725.  Fix MapReduce API incompatibilities between 0.20 and 0.21.
+    (tomwhite)
+
+    MAPREDUCE-1606. TestJobACLs may timeout as there are no slots for launching
+    JOB_CLEANUP task. (Ravi Gummadi via vinodkv)
+
+    MAPREDUCE-1765. Correct streaming documentation for StreamXmlRecordReader.
+    (Corinne Chandel via amareshwari)
+
+    MAPREDUCE-1880. Fix BigDecimal.divide(..) in the pi example.  (szetszwo)
+
+    MAPREDUCE-1885. Revert FileSystem create method that takes CreateFlags
+    (MapReduce part of HADOOP-6826). (Ravi Gummadi via tomwhite)
+
+    MAPREDUCE-1870. Harmonize MapReduce JAR library versions with Common and
+    HDFS. (tomwhite)
+
+    MAPREDUCE-1791. Remote cluster control functionality needs JavaDocs
+    improvement (Konstantin Boudnik)
+
+    MAPREDUCE-1942. 'compile-fault-inject' should never be called directly.
+    (Konstantin Boudnik)
+
+    MAPREDUCE-1876. Fixes TaskAttemptStartedEvent to correctly log event type
+    for all task types. (Amar Kamat via amareshwari)
+
+    MAPREDUCE-1926. MapReduce distribution is missing build-utils.xml.
+    (tomwhite)
+
+    MAPREDUCE-2012. Some contrib tests fail in branch 0.21 and trunk.
+    (Amareshwari Sriramadasu via tomwhite)
+
+    MAPREDUCE-1980. Fixes TaskAttemptUnsuccessfulCompletionEvent and
+    TaskAttemptFinishedEvent to correctly log event type for all task types.
+    (Amar Kamat via amareshwari)
+
+    MAPREDUCE-1856. Extract a subset of tests for smoke (DOA) validation (cos)
+

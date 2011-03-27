@@ -28,6 +28,7 @@ import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.mapreduce.Mapper;
+import org.apache.hadoop.security.Credentials;
 
 /**
  * A read-only view of the job that is provided to the tasks while they
@@ -41,6 +42,12 @@ public interface JobContext extends MRJobConfig {
    * @return the shared configuration object
    */
   public Configuration getConfiguration();
+
+  /**
+   * Get credentials for the job.
+   * @return credentials for the job
+   */
+  public Credentials getCredentials();
 
   /**
    * Get the unique ID for the job.
@@ -175,6 +182,13 @@ public interface JobContext extends MRJobConfig {
    * @return boolean 
    */
   public boolean getJobSetupCleanupNeeded();
+  
+  /**
+   * Get whether task-cleanup is needed for the job 
+   * 
+   * @return boolean 
+   */
+  public boolean getTaskCleanupNeeded();
 
   /**
    * Get whether the task profiling is enabled.

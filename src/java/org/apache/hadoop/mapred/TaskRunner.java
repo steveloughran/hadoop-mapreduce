@@ -19,7 +19,6 @@ package org.apache.hadoop.mapred;
 
 import java.io.ByteArrayOutputStream;
 import java.io.File;
-import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.PrintStream;
@@ -34,19 +33,18 @@ import java.util.Vector;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
-import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.filecache.TaskDistributedCacheManager;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
 import org.apache.hadoop.mapreduce.security.TokenCache;
-import org.apache.hadoop.mapreduce.server.tasktracker.Localizer;
 import org.apache.hadoop.fs.FSError;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.util.StringUtils;
@@ -76,8 +74,6 @@ abstract class TaskRunner extends Thread {
 
   protected JobConf conf;
   JvmManager jvmManager;
-
-  static String jobACLsFile = "job-acl.xml";
 
   public TaskRunner(TaskTracker.TaskInProgress tip, TaskTracker tracker, 
       JobConf conf) {
@@ -220,7 +216,7 @@ abstract class TaskRunner extends Thread {
     } catch (FSError e) {
       LOG.fatal("FSError", e);
       try {
-        tracker.fsError(t.getTaskID(), e.getMessage());
+        tracker.internalFsError(t.getTaskID(), e.getMessage());
       } catch (IOException ie) {
         LOG.fatal(t.getTaskID()+" reporting FSError", ie);
       }
@@ -230,7 +226,7 @@ abstract class TaskRunner extends Thread {
       ByteArrayOutputStream baos = new ByteArrayOutputStream();
       causeThrowable.printStackTrace(new PrintStream(baos));
       try {
-        tracker.reportDiagnosticInfo(t.getTaskID(), baos.toString());
+        tracker.internalReportDiagnosticInfo(t.getTaskID(), baos.toString());
       } catch (IOException e) {
         LOG.warn(t.getTaskID()+" Reporting Diagnostics", e);
       }
@@ -283,35 +279,12 @@ abstract class TaskRunner extends Thread {
     if (!b) {
       LOG.warn("mkdirs failed. Ignoring");
     } else {
-      Localizer.PermissionsHandler.setPermissions(logDir,
-          Localizer.PermissionsHandler.sevenZeroZero);
+      FileSystem localFs = FileSystem.getLocal(conf);
+      localFs.setPermission(new Path(logDir.getCanonicalPath()),
+                            new FsPermission((short)0700));
     }
-    // write job acls into a file to know the access for task logs
-    writeJobACLs(logDir);
+
     return logFiles;
-  }
-
-  // Writes job-view-acls and user name into an xml file
-  private void writeJobACLs(File logDir) throws IOException {
-    File aclFile = new File(logDir, TaskRunner.jobACLsFile);
-    Configuration aclConf = new Configuration(false);
-
-    // set the job view acls in aclConf
-    String jobViewACLs = conf.get(MRJobConfig.JOB_ACL_VIEW_JOB);
-    if (jobViewACLs != null) {
-      aclConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, jobViewACLs);
-    }
-    // set jobOwner as mapreduce.job.user.name in aclConf
-    String jobOwner = conf.getUser();
-    aclConf.set(MRJobConfig.USER_NAME, jobOwner);
-    FileOutputStream out = new FileOutputStream(aclFile);
-    try {
-      aclConf.writeXml(out);
-    } finally {
-      out.close();
-    }
-    Localizer.PermissionsHandler.setPermissions(aclFile,
-        Localizer.PermissionsHandler.sevenZeroZero);
   }
 
   /**
@@ -341,8 +314,13 @@ abstract class TaskRunner extends Thread {
    * @return
    */
   private List<String> getVMSetupCmd() {
-    String[] ulimitCmd = Shell.getUlimitMemoryCommand(getChildUlimit(conf));
+
+    int ulimit = getChildUlimit(conf);
+    if (ulimit <= 0) {
+      return null;
+    }
     List<String> setup = null;
+    String[] ulimitCmd = Shell.getUlimitMemoryCommand(ulimit);
     if (ulimitCmd != null) {
       setup = new ArrayList<String>();
       for (String arg : ulimitCmd) {
@@ -493,7 +471,7 @@ abstract class TaskRunner extends Thread {
       tmpDir = new Path(workDir.toString(), tmp);
 
       FileSystem localFs = FileSystem.getLocal(conf);
-      if (!localFs.mkdirs(tmpDir) && !localFs.getFileStatus(tmpDir).isDir()) {
+      if (!localFs.mkdirs(tmpDir) && localFs.getFileStatus(tmpDir).isFile()) {
         throw new IOException("Mkdirs failed to create " + tmpDir.toString());
       }
     }
@@ -662,7 +640,7 @@ abstract class TaskRunner extends Thread {
   }
   
   /**
-   * Given a "jobJar" (typically retrieved via {@link Configuration.getJar()}),
+   * Given a "jobJar" (typically retrieved via {@link JobConf#getJar()}),
    * appends classpath entries for it, as well as its lib/ and classes/
    * subdirectories.
    * 
@@ -759,7 +737,8 @@ abstract class TaskRunner extends Thread {
       if (!flink.exists()) {
         LOG.info(String.format("Creating symlink: %s <- %s", target, link));
         if (0 != FileUtil.symLink(target, link)) {
-          LOG.warn(String.format("Failed to create symlink: %s <- %s", target, link));
+          throw new IOException(String.format(
+                "Failed to create symlink: %s <- %s", target, link));
         }
       }
     }

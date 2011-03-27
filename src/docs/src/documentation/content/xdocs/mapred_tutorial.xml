@@ -44,7 +44,7 @@
           <a href="ext:single-node-setup">Single Node Setup</a> for first-time users.
         </li>
         <li>
-          <a href="cluster_setup.html">Cluster Setup</a> for large, distributed clusters.
+          <a href="ext:cluster-setup">Cluster Setup</a> for large, distributed clusters.
         </li>
       </ul>
     </section>
@@ -159,7 +159,7 @@
       
       <p>This example works with a 
       pseudo-distributed (<a href="ext:single-node-setup">Single Node Setup</a>) 
-     or fully-distributed (<a href="cluster_setup.html">Cluster Setup</a>) 
+     or fully-distributed (<a href="ext:cluster-setup">Cluster Setup</a>) 
       Hadoop installation.</p>   
       
       <section>
@@ -392,7 +392,7 @@
         provides this functionality is called the <em>distributed cache</em>.
         More details about the command line options surrounding job launching
         and control of the distributed cache are available at 
-        <a href="commands_manual.html"> Hadoop Commands Guide.</a></p>
+        <a href="ext:commands-manual"> Hadoop Commands Guide.</a></p>
         
         <p>Hadoop ships with some example code in a jar precompiled for you;
         one of these is (another) wordcount program. Here's an example
@@ -1201,49 +1201,107 @@
         </p>
         
         <section>
-        <title> Memory Management</title>
-        <p>Users/admins can also specify the maximum virtual memory 
-        of the launched child-task, and any sub-process it launches 
-        recursively, using <code>mapred.{map|reduce}.child.ulimit</code>. Note 
-        that the value set here is a per process limit.
-        The value for <code>mapred.{map|reduce}.child.ulimit</code> should be 
-        specified in kilo bytes (KB). And also the value must be greater than
-        or equal to the -Xmx passed to JavaVM, or else the VM might not start. 
-        </p>
-        
-        <p>Note: <code>mapred.{map|reduce}.child.java.opts</code> are used only 
-        for configuring the launched child tasks from task tracker. Configuring 
-        the memory options for daemons is documented under
-        <a href="cluster_setup.html#Configuring+the+Environment+of+the+Hadoop+Daemons">
-        Configuring the Environment of the Hadoop Daemons</a> (Cluster Setup).</p>
-        
-        <p>The memory available to some parts of the framework is also
-        configurable. In map and reduce tasks, performance may be influenced
-        by adjusting parameters influencing the concurrency of operations and
-        the frequency with which data will hit disk. Monitoring the filesystem
-        counters for a job- particularly relative to byte counts from the map
-        and into the reduce- is invaluable to the tuning of these
-        parameters.</p>
-        
-        <p>Users can choose to override default limits of Virtual Memory and RAM 
-          enforced by the task tracker, if memory management is enabled. 
-          Users can set the following parameter per job:</p>
+         <title>Configuring Memory Requirements For A Job</title>
+         
+         <p>
+         MapReduce tasks are launched with some default memory limits
+         that are provided by the system or by the cluster's administrators.
+         Memory intensive jobs might need to use more than these default
+         values. Hadoop has some configuration options that allow these to 
+         be changed.
+         Without such modifications, memory intensive jobs could fail due
+         to <code>OutOfMemory</code> errors in tasks or could get killed
+         when the limits are enforced by the system. This section describes
+         the various options that can be used to configure specific
+         memory requirements.
+         </p>
+          
+         <ul>
+         
+           <li>
+           <code>mapreduce.{map|reduce}.java.opts</code>: If the task
+           requires more Java heap space, this option must be used. The
+           value of this option should pass the desired heap using the JVM
+           option -Xmx. For example, to use 1G of heap space, the option
+           should be passed in as -Xmx1024m. Note that other JVM options
+           are also passed using the same option. Hence, append the
+           heap space option along with other options already configured.
+           </li>
+         
+           <li>
+           <code>mapreduce.{map|reduce}.ulimit</code>: The slaves where
+           tasks are run could be configured with a ulimit value that
+           applies a limit to every process that is launched on the slave.
+           If the task, or any child that the task launches (like in
+           streaming), requires more than the configured limit, this option
+           must be used. The value is given in kilobytes. For example, to
+           increase the ulimit to 1G, the option should be set to 1048576.
+           Note that this value is a per process limit. Since it applies 
+           to the JVM as well, the heap space given to the JVM through 
+           the <code>mapreduce.{map|reduce}.java.opts</code> should be less
+           than the value configured for the ulimit. Otherwise the JVM
+           will not start.
+           </li>
            
-          <table>
-          <tr><th>Name</th><th>Type</th><th>Description</th></tr>
-          <tr><td><code>mapred.task.maxvmem</code></td><td>int</td>
-            <td>A number, in bytes, that represents the maximum Virtual Memory
-            task-limit for each task of the job. A task will be killed if 
-            it consumes more Virtual Memory than this number. 
-          </td></tr>
-          <tr><td>mapred.task.maxpmem</td><td>int</td>
-            <td>A number, in bytes, that represents the maximum RAM task-limit
-            for each task of the job. This number can be optionally used by
-            Schedulers to prevent over-scheduling of tasks on a node based 
-            on RAM needs.  
-          </td></tr>
-        </table>       
+           <li>
+           <code>mapreduce.{map|reduce}.memory.mb</code>: In some 
+           environments, administrators might have configured a total limit
+           on the virtual memory used by the entire process tree for a task, 
+           including all processes launched recursively by the task or 
+           its children, like in streaming. More details about this can be
+           found in the section on 
+           <a href="ext:cluster-setup/ConfiguringMemoryParameters">
+           Monitoring Task Memory Usage</a> in the Cluster SetUp guide.
+           If a task requires more virtual memory for its entire tree, 
+           this option 
+           must be used. The value is given in MB. For example, to set 
+           the limit to 1G, the option should be set to 1024. Note that this 
+           value does not automatically influence the per process ulimit or 
+           heap space. Hence, you may need to set those parameters as well 
+           (as described above) in order to give your tasks the right amount 
+           of memory.
+           </li>
+          
+           <li>
+           <code>mapreduce.{map|reduce}.memory.physical.mb</code>: 
+           This parameter is similar to 
+           <code>mapreduce.{map|reduce}.memory.mb</code>, except it specifies
+           how much physical memory is required by a task for its entire
+           tree of processes. The parameter is applicable if administrators
+           have configured a total limit on the physical memory used by
+           all MapReduce tasks.
+           </li>
+ 
+         </ul>
+         
+         <p>
+         As seen above, each of the options can be specified separately for
+         map and reduce tasks. It is typically the case that the different
+         types of tasks have different memory requirements. Hence different
+         values can be set for the corresponding options.
+         </p>
+         
+         <p>
+         The memory available to some parts of the framework is also
+         configurable. In map and reduce tasks, performance may be influenced
+         by adjusting parameters influencing the concurrency of operations and
+         the frequency with which data will hit disk. Monitoring the filesystem
+         counters for a job- particularly relative to byte counts from the map
+         and into the reduce- is invaluable to the tuning of these
+         parameters.
+         </p>
+           
+         <p>
+         Note: The memory related configuration options described above 
+         are used only for configuring the launched child tasks from the 
+         tasktracker. Configuring the memory options for daemons is documented 
+         under
+         <a href="ext:cluster-setup/ConfiguringEnvironmentHadoopDaemons">
+         Configuring the Environment of the Hadoop Daemons</a> (Cluster Setup).
+         </p>
+          
         </section>
+
         <section>
           <title>Map Parameters</title>
 
@@ -1547,6 +1605,81 @@
         <a href="http://hadoop.apache.org/common/docs/current/native_libraries.html#Loading+Native+Libraries+Through+DistributedCache">
         Building Native Hadoop Libraries</a>.</p>
         </section>
+        <section>
+          <title>Job Credentials</title>
+          <p>In a secure cluster, the user is authenticated via Kerberos'
+             kinit command. Because of scalability concerns, we don't push
+             the client's Kerberos' tickets in MapReduce jobs. Instead, we
+             acquire delegation tokens from each HDFS NameNode that the job
+             will use and store them in the job as part of job submission.
+             The delegation tokens are automatically obtained
+             for the HDFS that holds the staging directories, where the
+             job files are written, and any HDFS systems referenced by
+             FileInputFormats, FileOutputFormats, DistCp, and the
+             distributed cache.
+             Other applications require to set the configuration
+             "mapreduce.job.hdfs-servers" for all NameNodes that tasks might 
+             need to talk during the job execution. This is a comma separated
+             list of file system names, such as "hdfs://nn1/,hdfs://nn2/".
+             These tokens are passed to the JobTracker
+             as part of the job submission as <a href="http://hadoop.apache.org/common/docs/current/api/org/apache/hadoop/security/Credentials.html">Credentials</a>. </p> 
+
+          <p>Similar to HDFS delegation tokens, we also have MapReduce delegation tokens. The
+             MapReduce tokens are provided so that tasks can spawn jobs if they wish to. The tasks authenticate
+             to the JobTracker via the MapReduce delegation tokens. The delegation token can
+             be obtained via the API in <a href="api/org/apache/hadoop/mapred/jobclient/getdelegationtoken">
+             JobClient.getDelegationToken</a>. The obtained token must then be pushed onto the
+             credentials that is there in the JobConf used for job submission. The API  
+             <a href="http://hadoop.apache.org/common/docs/current/api/org/apache/hadoop/security/Credentials.html#addToken(org.apache.hadoop.io.Text, org.apache.hadoop.security.token.Token)">Credentials.addToken</a>
+             can be used for this. </p>
+
+          <p>The credentials are sent to the JobTracker as part of the job submission process.
+             The JobTracker persists the tokens and secrets in its filesystem (typically HDFS) 
+             in a file within mapred.system.dir/JOBID. The TaskTracker localizes the file as part
+             job localization. Tasks see an environment variable called
+             HADOOP_TOKEN_FILE_LOCATION and the framework sets this to point to the
+             localized file. In order to launch jobs from tasks or for doing any HDFS operation,
+             tasks must set the configuration "mapreduce.job.credentials.binary" to point to
+             this token file.</p> 
+
+          <p>The HDFS delegation tokens passed to the JobTracker during job submission are
+             are cancelled by the JobTracker when the job completes. This is the default behavior
+             unless mapreduce.job.complete.cancel.delegation.tokens is set to false in the 
+             JobConf. For jobs whose tasks in turn spawns jobs, this should be set to false.
+             Applications sharing JobConf objects between multiple jobs on the JobClient side 
+             should look at setting mapreduce.job.complete.cancel.delegation.tokens to false. 
+             This is because the Credentials object within the JobConf will then be shared. 
+             All jobs will end up sharing the same tokens, and hence the tokens should not be 
+             canceled when the jobs in the sequence finish.</p>
+
+          <p>Apart from the HDFS delegation tokens, arbitrary secrets can also be 
+             passed during the job submission for tasks to access other third party services.
+             The APIs 
+             <a href="ext:api/org/apache/hadoop/mapred/jobconf/getcredentials">
+             JobConf.getCredentials</a> or <a href="ext:api/org/apache/
+              hadoop/mapreduce/jobcontext/getcredentials">JobContext.getCredentials()</a>
+             should be used to get the credentials object and then
+             <a href="http://hadoop.apache.org/common/docs/current/api/org/apache/hadoop/security/Credentials.html#addSecretKey(org.apache.hadoop.io.Text, byte[])">
+             Credentials.addSecretKey</a> should be used to add secrets.</p>
+
+          <p>For applications written using the old MapReduce API, the Mapper/Reducer classes 
+             need to implement <a href="api/org/apache/hadoop/mapred/jobconfigurable">
+             JobConfigurable</a> in order to get access to the credentials in the tasks.
+             A reference to the JobConf passed in the 
+             <a href="api/org/apache/hadoop/mapred/jobconfigurable/configure">
+             JobConfigurable.configure</a> should be stored. In the new MapReduce API, 
+             a similar thing can be done in the 
+             <a href="api/org/apache/hadoop/mapreduce/mapper/setup">Mapper.setup</a>
+             method.
+             The api <a href="ext:api/org/apache/hadoop/mapred/jobconf/getcredentials">
+              JobConf.getCredentials()</a> or the api <a href="ext:api/org/apache/
+              hadoop/mapreduce/jobcontext/getcredentials">JobContext.getCredentials()</a>
+              should be used to get the credentials reference (depending
+              on whether the new MapReduce API or the old MapReduce API is used). 
+              Tasks can access the secrets using the APIs in <a href="http://hadoop.apache.org/common/docs/current/api/org/apache/hadoop/security/Credentials.html">Credentials</a> </p>
+
+             
+        </section>
       </section>
       
       <section>
@@ -1629,12 +1762,14 @@
         
         <section>
           <title>Job Authorization</title>
-          <p>Job level authorization is enabled on the cluster, if the configuration
-          <code>mapreduce.cluster.job-authorization-enabled</code> is set to
-          true. When enabled, access control checks are done by the JobTracker
-          and the TaskTracker before allowing users to view
-          job details or to modify a job using Map/Reduce APIs,
-          CLI or web user interfaces.</p>
+          <p>Job level authorization and queue level authorization are enabled
+          on the cluster, if the configuration
+          <code>mapreduce.cluster.acls.enabled</code> is set to
+          true. When enabled, access control checks are done by (a) the
+          JobTracker before allowing users to submit jobs to queues and
+          administering these jobs and (b) by the JobTracker and the TaskTracker
+          before allowing users to view job details or to modify a job using
+          MapReduce APIs, CLI or web user interfaces.</p>
          
           <p>A job submitter can specify access control lists for viewing or
           modifying a job via the configuration properties
@@ -1642,11 +1777,13 @@
           <code>mapreduce.job.acl-modify-job</code> respectively. By default, 
           nobody is given access in these properties.</p> 
           
-          <p>However, irrespective of the ACLs configured, a job's owner,
-          the superuser and the members of an admin configured supergroup
-          (<code>mapreduce.cluster.permissions.supergroup</code>) always
-          have access to view and modify a job.</p>
-          
+          <p>However, irrespective of the job ACLs configured, a job's owner,
+          the user who started the cluster and cluster administrators
+          (<code>mapreduce.cluster.administrators</code>)
+          and queue administrators of the queue to which the job was submitted
+          to (<code>acl-administer-jobs</code>) always have access to view and
+          modify a job.</p>
+
           <p> A job view ACL authorizes users against the configured 
           <code>mapreduce.job.acl-view-job</code> before returning possibly 
           sensitive information about a job, like: </p>
@@ -1668,14 +1805,17 @@
             <li> killing/failing a task of a job </li>
             <li> setting the priority of a job </li>
           </ul>
-          <p>These operations are also protected by the queue level ACL,
-          "acl-administer-jobs", configured via mapred-queue-acls.xml. The caller
-          will be authorized against both queue level ACLs and job level ACLs,
-          depending on what is enabled.</p>
+          <p>These view and modify operations on jobs are also permitted by
+          the queue level ACL, "acl-administer-jobs", configured via
+          mapred-queue-acls.xml. The caller will be able to do the operation
+          if he/she is part of either queue admins ACL or job modification ACL
+          or the user who started the cluster or a cluster administrator
+          (<code>mapreduce.cluster.administrators</code>).
+          </p>
           
           <p>The format of a job level ACL is the same as the format for a
           queue level ACL as defined in the
-          <a href ="cluster_setup.html#Configuring+the+Hadoop+Daemons">
+          <a href ="ext:cluster-setup/ConfiguringHadoopDaemons">
           Cluster Setup</a> documentation.
           </p>
           
@@ -2420,7 +2560,7 @@
       <p>This example needs the HDFS to be up and running, especially for the 
       <code>DistributedCache</code>-related features. Hence it only works with a 
       pseudo-distributed (<a href="ext:single-node-setup">Single Node Setup</a>) 
-     or fully-distributed (<a href="cluster_setup.html#Fully-Distributed+Operation">Cluster Setup</a>) 
+     or fully-distributed (<a href="ext:cluster-setup/FullyDistributedOperation">Cluster Setup</a>) 
       Hadoop installation.</p>     
       
       <section>

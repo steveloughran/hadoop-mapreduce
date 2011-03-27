@@ -95,14 +95,14 @@ class JSPUtil {
    *         and decide if view should be allowed or not. Job will be null if
    *         the job with given jobid doesnot exist at the JobTracker.
    */
-  public static JobWithViewAccessCheck checkAccessAndGetJob(JobTracker jt,
+  public static JobWithViewAccessCheck checkAccessAndGetJob(final JobTracker jt,
       JobID jobid, HttpServletRequest request, HttpServletResponse response)
       throws ServletException, IOException {
     final JobInProgress job = jt.getJob(jobid);
     JobWithViewAccessCheck myJob = new JobWithViewAccessCheck(job);
 
     String user = request.getRemoteUser();
-    if (user != null && job != null && jt.isJobLevelAuthorizationEnabled()) {
+    if (user != null && job != null && jt.areACLsEnabled()) {
       final UserGroupInformation ugi =
         UserGroupInformation.createRemoteUser(user);
       try {
@@ -110,7 +110,8 @@ class JSPUtil {
           public Void run() throws IOException, ServletException {
 
             // checks job view permission
-            job.checkAccess(ugi, JobACL.VIEW_JOB);
+            jt.getACLsManager().checkAccess(job, ugi,
+                Operation.VIEW_JOB_DETAILS);
             return null;
           }
         });
@@ -263,6 +264,15 @@ class JSPUtil {
   public static String generateJobTable(String label, Collection<JobInProgress> jobs
       , int refresh, int rowId, JobConf conf) throws IOException {
 
+    // Remove uninitialized jobs because calling JobInProgress synchronized
+    // methods while job initialization takes long time
+    for (Iterator<JobInProgress> it = jobs.iterator(); it.hasNext();) {
+      JobInProgress job = it.next();
+      if (!job.inited()) {
+        it.remove();
+      }
+    }
+
     boolean isModifiable = label.equals("Running") &&
         privateActionsAllowed(conf);
     StringBuilder sb = new StringBuilder();
@@ -320,6 +330,7 @@ class JSPUtil {
         int completedMaps = job.finishedMaps();
         int completedReduces = job.finishedReduces();
         String name = HtmlQuoting.quoteHtmlChars(profile.getJobName());
+        String abbreviatedName = getAbbreviatedJobName(name);
         String jobpri = job.getPriority().toString();
         String schedulingInfo =
           HtmlQuoting.quoteHtmlChars(job.getStatus().getSchedulingInfo());
@@ -338,8 +349,8 @@ class JSPUtil {
             + refresh + "\">" + jobid + "</a></td>" + "<td id=\"priority_"
             + rowId + "\">" + jobpri + "</td>" + "<td id=\"user_" + rowId
             + "\">" + HtmlQuoting.quoteHtmlChars(profile.getUser()) +
-              "</td>" + "<td id=\"name_" + rowId
-            + "\">" + ("".equals(name) ? "&nbsp;" : name) + "</td>" + "<td>"
+              "</td>" + "<td title=\"" + name + "\" id=\"name_" + rowId
+            + "\">" + ("".equals(abbreviatedName) ? "&nbsp;" : abbreviatedName) + "</td>" + "<td>"
             + StringUtils.formatPercent(status.mapProgress(), 2)
             + ServletUtil.percentageGraph(status.mapProgress() * 100, 80)
             + "</td><td>" + desiredMaps + "</td><td>" + completedMaps
@@ -360,6 +371,10 @@ class JSPUtil {
     sb.append("</table>\n");
     
     return sb.toString();
+  }
+
+  static String getAbbreviatedJobName(String name) {
+    return (name.length() > 80 ? name.substring(0,76) + "..." : name);
   }
 
   @SuppressWarnings("unchecked")
@@ -401,7 +416,7 @@ class JSPUtil {
             "<td id=\"priority_" + rowId + "\">" + 
               status.getJobPriority().toString() + "</td>" +
             "<td id=\"user_" + rowId + "\">" + HtmlQuoting.quoteHtmlChars(status.getUsername()) + "</td>" +
-            "<td id=\"name_" + rowId + "\">" + HtmlQuoting.quoteHtmlChars(status.getJobName()) + "</td>" +
+            "<td title=\"" + HtmlQuoting.quoteHtmlChars(status.getJobName()) + "\" id=\"name_" + rowId + "\">" + HtmlQuoting.quoteHtmlChars(getAbbreviatedJobName(status.getJobName())) + "</td>" +
             "<td>" + JobStatus.getJobRunState(status.getRunState()) + "</td>" +
             "<td>" + new Date(status.getStartTime()) + "</td>" +
             "<td>" + new Date(status.getFinishTime()) + "</td>" +
@@ -475,10 +490,10 @@ class JSPUtil {
    * Read a job-history log file and construct the corresponding {@link JobInfo}
    * . Also cache the {@link JobInfo} for quick serving further requests.
    * 
-   * @param logFile
-   * @param fs
-   * @param jobTracker
-   * @return JobInfo
+   * @param logFile      the job history log file
+   * @param fs           job tracker file system
+   * @param jobTracker   the job tracker
+   * @return JobInfo     job's basic information
    * @throws IOException
    */
   static JobInfo getJobInfo(Path logFile, FileSystem fs,
@@ -506,20 +521,18 @@ class JSPUtil {
       }
     }
 
-    jobTracker.getJobACLsManager().checkAccess(JobID.forName(jobid),
-        UserGroupInformation.getCurrentUser(), JobACL.VIEW_JOB,
-        jobInfo.getUsername(), jobInfo.getJobACLs().get(JobACL.VIEW_JOB));
     return jobInfo;
   }
 
   /**
-   * Check the access for users to view job-history pages.
+   * Check the access for users to view job-history pages and return
+   * {@link JobInfo}.
    * 
-   * @param request
-   * @param response
-   * @param jobTracker
-   * @param fs
-   * @param logFile
+   * @param request     http servlet request
+   * @param response    http servlet response
+   * @param jobTracker  the job tracker
+   * @param fs          job tracker file system
+   * @param logFile     the job history log file
    * @return the job if authorization is disabled or if the authorization checks
    *         pass. Otherwise return null.
    * @throws IOException
@@ -533,19 +546,24 @@ class JSPUtil {
     String jobid =
         JobHistory.getJobIDFromHistoryFilePath(logFile).toString();
     String user = request.getRemoteUser();
-    JobInfo job = null;
+
+    JobInfo jobInfo = JSPUtil.getJobInfo(logFile, fs, jobTracker);
     if (user != null) {
+      // authorize user for job-view access
       try {
         final UserGroupInformation ugi =
             UserGroupInformation.createRemoteUser(user);
-        job =
-            ugi.doAs(new PrivilegedExceptionAction<JobHistoryParser.JobInfo>() {
-              public JobInfo run() throws IOException {
-                // checks job view permission
-                JobInfo jobInfo = JSPUtil.getJobInfo(logFile, fs, jobTracker);
-                return jobInfo;
-              }
-            });
+        
+        AccessControlList viewJobAcl = jobInfo.getJobACLs().get(JobACL.VIEW_JOB);
+        if (viewJobAcl == null) {
+          // may be older job history file of earlier unsecure cluster
+          viewJobAcl = new AccessControlList("*");
+        }
+
+        jobTracker.getACLsManager().checkAccess(jobid, ugi,
+            jobInfo.getJobQueueName(), Operation.VIEW_JOB_DETAILS,
+            jobInfo.getUsername(), viewJobAcl);
+
       } catch (AccessControlException e) {
         String errMsg =
             String.format(
@@ -557,11 +575,9 @@ class JSPUtil {
         JSPUtil.setErrorAndForward(errMsg, request, response);
         return null;
       }
-    } else {
-      // no authorization needed
-      job = JSPUtil.getJobInfo(logFile, fs, jobTracker);
-    }
-    return job;
+    } // else { no authorization needed }
+
+    return jobInfo;
   }
 
   /**
@@ -574,7 +590,7 @@ class JSPUtil {
   static void printJobACLs(JobTracker tracker,
       Map<JobACL, AccessControlList> jobAcls, JspWriter out)
       throws IOException {
-    if (tracker.isJobLevelAuthorizationEnabled()) {
+    if (tracker.areACLsEnabled()) {
       // Display job-view-acls and job-modify-acls configured for this job
       out.print("<b>Job-ACLs:</b><br>");
       for (JobACL aclName : JobACL.values()) {
@@ -586,6 +602,10 @@ class JSPUtil {
               + HtmlQuoting.quoteHtmlChars(aclStr) + "<br>");
         }
       }
+    }
+    else {
+      out.print("<b>Job-ACLs: " + new AccessControlList("*").toString()
+          + "</b><br>");
     }
   }
 }

@@ -17,8 +17,6 @@
  */
 package org.apache.hadoop.mapred;
 
-import java.io.IOException;
-
 import junit.framework.Assert;
 
 import org.apache.commons.logging.Log;
@@ -26,7 +24,9 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.util.ToolRunner;
+import org.apache.hadoop.util.Shell.ShellCommandExecutor;
 
 import org.junit.Test;
 
@@ -50,23 +50,33 @@ public class TestSimulatorDeterministicReplay {
   
   void compareLogDirs(String dir1, String dir2) {
     try {
-      Runtime runtime = Runtime.getRuntime();
-      Process process = runtime.exec("diff -r /dev/null /dev/null");
-      process.waitFor();
-      // If there is no diff available, we skip the test and end up in 
-      // the catch block
-      // Make sure diff understands the -r option
-      if (process.exitValue() != 0) {
-        LOG.warn("diff -r is not working, skipping the test");
+      try {
+        // If there is no diff available, we skip the test and end up in
+        // the catch block
+        // Make sure diff understands the -r option
+        ShellCommandExecutor executor = new ShellCommandExecutor(new String[] {
+            "diff", "-r", "-q", "/dev/null", "/dev/null" });
+        executor.execute();
+        if (executor.getExitCode() != 0) {
+          LOG.warn("diff -r -q is not working, skipping the test");
+          return;
+        }
+      } catch (Exception e) {
+        LOG.warn("diff -r -q is not working, skipping the test", e);
         return;
       }
+
       // Run the real comparison
-      process = runtime.exec("diff -r " + dir1 + " " + dir2);
-      process.waitFor();
-      Assert.assertEquals("Job history logs differ, diff returned", 
-                          0, process.exitValue());
+      ShellCommandExecutor executor = 
+    	  new ShellCommandExecutor(new String[] {"diff", "-r", "-q", dir1, dir2});
+      executor.execute();
+      Assert.assertEquals("Job history logs differ, diff returned",
+    		  0, executor.getExitCode());
     } catch (Exception e) {
       LOG.warn("Exception while diffing: " + e);
+      Assert.fail(String.format(
+    		  "Exception while diffing %s and %s. Exception - %s",
+    		  dir1, dir2, e));
     }                        
   }
   
@@ -93,6 +103,7 @@ public class TestSimulatorDeterministicReplay {
     conf.set("hadoop.log.dir", hadoopLogDir.toString());
     conf.set("mapred.job.tracker.http.address",
              "0.0.0.0:" + jobTrackerHttpPort);
+    conf.setBoolean(JTConfig.JT_PERSIST_JOBSTATUS, false);
     String[] args = { traceFile.toString(), topologyFile.toString() };
     int res = ToolRunner.run(conf, new SimulatorEngine(), args);
     Assert.assertEquals(0, res);

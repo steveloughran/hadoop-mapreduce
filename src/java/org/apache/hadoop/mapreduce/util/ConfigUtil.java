@@ -54,6 +54,9 @@ public class ConfigUtil {
       new String[] {MRConfig.MAPMEMORY_MB});
     Configuration.addDeprecation("mapred.cluster.reduce.memory.mb", 
       new String[] {MRConfig.REDUCEMEMORY_MB});
+    Configuration.addDeprecation("mapred.acls.enabled", 
+        new String[] {MRConfig.MR_ACLS_ENABLED});
+
     Configuration.addDeprecation("mapred.cluster.max.map.memory.mb", 
       new String[] {JTConfig.JT_MAX_MAPMEMORY_MB});
     Configuration.addDeprecation("mapred.cluster.max.reduce.memory.mb", 
@@ -171,8 +174,6 @@ public class ConfigUtil {
       new String[] {TTConfig.TT_LOCAL_CACHE_SIZE});
     Configuration.addDeprecation("tasktracker.contention.tracking", 
       new String[] {TTConfig.TT_CONTENTION_TRACKING});
-    Configuration.addDeprecation("hadoop.job.history.user.location", 
-      new String[] {MRJobConfig.HISTORY_LOCATION});
     Configuration.addDeprecation("job.end.notification.url", 
       new String[] {MRJobConfig.END_NOTIFICATION_URL});
     Configuration.addDeprecation("job.end.retry.attempts", 
@@ -247,8 +248,6 @@ public class ConfigUtil {
       new String[] {MRJobConfig.CACHE_SYMLINK});
     Configuration.addDeprecation("mapred.working.dir", 
       new String[] {MRJobConfig.WORKING_DIR});
-    Configuration.addDeprecation("hadoop.job.history.user.location", 
-      new String[] {MRJobConfig.HISTORY_LOCATION});
     Configuration.addDeprecation("user.name", 
       new String[] {MRJobConfig.USER_NAME});
     Configuration.addDeprecation("mapred.output.key.class", 

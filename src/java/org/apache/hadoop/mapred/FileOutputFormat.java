@@ -26,9 +26,9 @@ import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.mapred.FileAlreadyExistsException;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.util.Progressable;
-import org.apache.hadoop.fs.FileAlreadyExistsException;
 
 /** A base class for {@link OutputFormat}. */
 @InterfaceAudience.Public
@@ -118,7 +118,8 @@ public abstract class FileOutputFormat<K, V> implements OutputFormat<K, V> {
       setOutputPath(job, outDir);
       
       // get delegation token for the outDir's file system
-      TokenCache.obtainTokensForNamenodes(new Path[] {outDir}, job);
+      TokenCache.obtainTokensForNamenodes(job.getCredentials(), 
+                                          new Path[] {outDir}, job);
       
       // check its existence
       if (fs.exists(outDir)) {

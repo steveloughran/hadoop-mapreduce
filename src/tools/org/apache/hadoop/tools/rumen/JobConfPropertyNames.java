@@ -20,8 +20,9 @@ package org.apache.hadoop.tools.rumen;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 
 public enum JobConfPropertyNames {
-  QUEUE_NAMES("mapred.job.queue.name", MRJobConfig.QUEUE_NAME), JOB_NAMES(
-      MRJobConfig.JOB_NAME), TASK_JAVA_OPTS_S("mapred.child.java.opts"),
+  QUEUE_NAMES("mapred.job.queue.name", MRJobConfig.QUEUE_NAME),
+  JOB_NAMES("mapred.job.name", MRJobConfig.JOB_NAME),
+  TASK_JAVA_OPTS_S("mapred.child.java.opts"),
   MAP_JAVA_OPTS_S("mapred.child.java.opts", MRJobConfig.MAP_JAVA_OPTS),
   REDUCE_JAVA_OPTS_S("mapred.child.java.opts", MRJobConfig.REDUCE_JAVA_OPTS);
 

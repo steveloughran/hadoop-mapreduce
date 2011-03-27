@@ -22,7 +22,7 @@ import java.io.IOException;
 
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenSelector;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenSelector;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.ipc.VersionedProtocol;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
@@ -39,8 +39,9 @@ import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.State;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.KerberosInfo;
-import org.apache.hadoop.security.TokenStorage;
+import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenInfo;
 
@@ -107,8 +108,11 @@ public interface ClientProtocol extends VersionedProtocol {
    * Version 31: Added TokenStorage to submitJob      
    * Version 32: Added delegation tokens (add, renew, cancel)
    * Version 33: Added JobACLs to JobStatus as part of MAPREDUCE-1307
+   * Version 34: Modified submitJob to use Credentials instead of TokenStorage.
+   * Version 35: Added the method getQueueAdmins(queueName) as part of
+   *             MAPREDUCE-1664.
    */
-  public static final long versionID = 33L;
+  public static final long versionID = 35L;
 
   /**
    * Allocate a name for the job.
@@ -121,8 +125,8 @@ public interface ClientProtocol extends VersionedProtocol {
    * Submit a Job for execution.  Returns the latest profile for
    * that job.
    */
-  public JobStatus submitJob(JobID jobId, String jobSubmitDir, TokenStorage ts) 
-  throws IOException, InterruptedException;
+  public JobStatus submitJob(JobID jobId, String jobSubmitDir, Credentials ts)
+      throws IOException, InterruptedException;
 
   /**
    * Get the current status of the cluster
@@ -143,6 +147,17 @@ public interface ClientProtocol extends VersionedProtocol {
   
   public long getTaskTrackerExpiryInterval() throws IOException,
                                                InterruptedException;
+  
+  /**
+   * Get the administrators of the given job-queue.
+   * This method is for hadoop internal use only.
+   * @param queueName
+   * @return Queue administrators ACL for the queue to which job is
+   *         submitted to
+   * @throws IOException
+   */
+  public AccessControlList getQueueAdmins(String queueName) throws IOException;
+
   /**
    * Kill the indicated job
    */

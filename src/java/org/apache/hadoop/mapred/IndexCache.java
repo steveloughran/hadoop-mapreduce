@@ -54,16 +54,18 @@ class IndexCache {
    * @param reduce
    * @param fileName The file to read the index information from if it is not
    *                 already present in the cache
+   * @param expectedIndexOwner The expected owner of the index file
    * @return The Index Information
    * @throws IOException
    */
   public IndexRecord getIndexInformation(String mapId, int reduce,
-      Path fileName) throws IOException {
+                                         Path fileName, String expectedIndexOwner)
+    throws IOException {
 
     IndexInformation info = cache.get(mapId);
 
     if (info == null) {
-      info = readIndexFileToCache(fileName, mapId);
+      info = readIndexFileToCache(fileName, mapId, expectedIndexOwner);
     } else {
       synchronized (info) {
         while (null == info.mapSpillRecord) {
@@ -78,7 +80,7 @@ class IndexCache {
     }
 
     if (info.mapSpillRecord.size() == 0 ||
-        info.mapSpillRecord.size() < reduce) {
+        info.mapSpillRecord.size() <= reduce) {
       throw new IOException("Invalid request " +
         " Map Id = " + mapId + " Reducer = " + reduce +
         " Index Info Length = " + info.mapSpillRecord.size());
@@ -87,7 +89,9 @@ class IndexCache {
   }
 
   private IndexInformation readIndexFileToCache(Path indexFileName,
-      String mapId) throws IOException {
+                                                String mapId,
+                                                String expectedIndexOwner)
+    throws IOException {
     IndexInformation info;
     IndexInformation newInd = new IndexInformation();
     if ((info = cache.putIfAbsent(mapId, newInd)) != null) {
@@ -106,7 +110,7 @@ class IndexCache {
     LOG.debug("IndexCache MISS: MapId " + mapId + " not found") ;
     SpillRecord tmp = null;
     try { 
-      tmp = new SpillRecord(indexFileName, conf);
+      tmp = new SpillRecord(indexFileName, conf, expectedIndexOwner);
     } catch (Throwable e) { 
       tmp = new SpillRecord(0);
       cache.remove(mapId);

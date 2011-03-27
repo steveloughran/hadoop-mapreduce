@@ -26,9 +26,12 @@ import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.mapred.JobACLsManager;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.JobInProgress;
+import org.apache.hadoop.mapred.JobTracker;
 import org.apache.hadoop.mapred.MiniMRCluster;
+import org.apache.hadoop.mapred.Operation;
+import static org.apache.hadoop.mapred.QueueManagerTestUtils.*;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.junit.Before;
@@ -54,23 +57,33 @@ public class TestJobACLs {
           TestJobACLs.class.getCanonicalName() + Path.SEPARATOR
               + "completed-job-store");
 
+  private String jobSubmitter = "jobSubmitter";
+  private String viewColleague = "viewColleague";
+  private String modifyColleague = "modifyColleague";
+  private String qAdmin = "qAdmin";
+
   /**
    * Start the cluster before running the actual test.
    * 
    * @throws IOException
    */
   @Before
-  public void setup() throws IOException {
+  public void setup() throws Exception {
     // Start the cluster
     startCluster(false);
   }
 
-  private void startCluster(boolean reStart) throws IOException {
-    UserGroupInformation MR_UGI = UserGroupInformation.getLoginUser();
+  private void startCluster(boolean reStart) throws Exception {
+
+    // Configure job queues
+    String[] queueNames = {"default"};
+    createQueuesConfigFile(queueNames,
+        new String[] { jobSubmitter }, new String[] { qAdmin });
+
     JobConf conf = new JobConf();
 
-    // Enable job-level authorization
-    conf.setBoolean(MRConfig.JOB_LEVEL_AUTHORIZATION_ENABLING_FLAG, true);
+    // Enable queue and job level authorization
+    conf.setBoolean(MRConfig.MR_ACLS_ENABLED, true);
 
     // Enable CompletedJobStore
     FileSystem fs = FileSystem.getLocal(conf);
@@ -82,8 +95,8 @@ public class TestJobACLs {
     conf.setBoolean(JTConfig.JT_PERSIST_JOBSTATUS, true);
     conf.set(JTConfig.JT_PERSIST_JOBSTATUS_HOURS, "1");
 
-    mr =
-        new MiniMRCluster(0, 0, 0, "file:///", 1, null, null, MR_UGI, conf);
+    UserGroupInformation MR_UGI = UserGroupInformation.getLoginUser();
+    mr = new MiniMRCluster(0, 0, 1, "file:///", 1, null, null, MR_UGI, conf);
   }
 
   /**
@@ -91,6 +104,7 @@ public class TestJobACLs {
    */
   @After
   public void tearDown() {
+    deleteQueuesConfigFile();
     if (mr != null) {
       mr.shutdown();
     }
@@ -105,10 +119,10 @@ public class TestJobACLs {
    * @throws ClassNotFoundException
    */
   @Test
-  public void testACLS() throws IOException, InterruptedException,
-      ClassNotFoundException {
+  public void testACLS() throws Exception {
     verifyACLViewJob();
-    verifyACLModifyJob();
+    verifyACLModifyJob(modifyColleague);
+    verifyACLModifyJob(qAdmin);
     verifyACLPersistence();
   }
 
@@ -122,23 +136,35 @@ public class TestJobACLs {
 
     // Set the job up.
     final Configuration myConf = mr.createJobConf();
-    myConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, "user1,user3");
+    myConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, viewColleague);
 
     // Submit the job as user1
-    Job job = submitJobAsUser(myConf, "user1");
+    Job job = submitJobAsUser(myConf, jobSubmitter);
 
-    final JobID jobId = job.getID();
+    final JobID jobId = job.getJobID();
 
     // Try operations as an unauthorized user.
-    verifyViewJobAsUnauthorizedUser(myConf, jobId, "user2");
+    verifyViewJobAsUnauthorizedUser(myConf, jobId, modifyColleague);
 
-    // Try operations as an authorized user.
-    verifyViewJobAsAuthorizedUser(myConf, jobId, "user3");
+    // Try operations as an authorized user, who is part of view-job-acl.
+    verifyViewJobAsAuthorizedUser(myConf, jobId, viewColleague);
+
+    // Try operations as an authorized user, who is a queue administrator.
+    verifyViewJobAsAuthorizedUser(myConf, jobId, qAdmin);
 
     // Clean up the job
     job.killJob();
   }
 
+  /**
+   * Submits a sleep job with 1 map task that runs for a long time(60 sec) and
+   * wait for the job to go into RUNNING state.
+   * @param clusterConf
+   * @param user the jobOwner
+   * @return Job that is started
+   * @throws IOException
+   * @throws InterruptedException
+   */
   private Job submitJobAsUser(final Configuration clusterConf, String user)
       throws IOException, InterruptedException {
     UserGroupInformation ugi =
@@ -148,11 +174,20 @@ public class TestJobACLs {
       public Object run() throws Exception {
         SleepJob sleepJob = new SleepJob();
         sleepJob.setConf(clusterConf);
-        Job myJob = sleepJob.createJob(0, 0, 1000, 1000, 1000, 1000);
+        // Disable setup/cleanup tasks at the job level
+        sleepJob.getConf().setBoolean(MRJobConfig.SETUP_CLEANUP_NEEDED, false);
+        Job myJob = sleepJob.createJob(1, 0, 60000, 1, 1, 1);
         myJob.submit();
         return myJob;
       }
     });
+
+    // Make the job go into RUNNING state by forceful initialization.
+    JobTracker jt = mr.getJobTrackerRunner().getJobTracker();
+    JobInProgress jip =
+        jt.getJob(org.apache.hadoop.mapred.JobID.downgrade(job.getJobID()));
+    jt.initJob(jip);
+
     return job;
   }
 
@@ -223,7 +258,7 @@ public class TestJobACLs {
           fail("AccessControlException expected..");
         } catch (IOException ioe) {
           assertTrue(ioe.getMessage().contains(
-              JobACLsManager.UNAUTHORIZED_JOB_ACCESS_ERROR + JobACL.VIEW_JOB));
+              " cannot perform operation " + JobACL.VIEW_JOB));
         } catch (InterruptedException e) {
           fail("Exception .. interrupted.." + e);
         }
@@ -234,7 +269,7 @@ public class TestJobACLs {
           fail("AccessControlException expected..");
         } catch (IOException ioe) {
           assertTrue(ioe.getMessage().contains(
-              JobACLsManager.UNAUTHORIZED_JOB_ACCESS_ERROR + JobACL.VIEW_JOB));
+              " cannot perform operation " + JobACL.VIEW_JOB));
         } catch (InterruptedException e) {
           fail("Exception .. interrupted.." + e);
         }
@@ -245,29 +280,29 @@ public class TestJobACLs {
   }
 
   /**
-   * Verify JobContext.Job_ACL_MODIFY_JOB
+   * Verify MRConfig.Job_ACL_MODIFY_JOB
    * 
    * @throws IOException
    * @throws InterruptedException
    * @throws ClassNotFoundException
    */
-  private void verifyACLModifyJob() throws IOException,
+  private void verifyACLModifyJob(String authorizedUser) throws IOException,
       InterruptedException, ClassNotFoundException {
 
     // Set the job up.
     final Configuration myConf = mr.createJobConf();
-    myConf.set(MRJobConfig.JOB_ACL_MODIFY_JOB, "user1,user3");
+    myConf.set(MRJobConfig.JOB_ACL_MODIFY_JOB, modifyColleague);
 
     // Submit the job as user1
-    Job job = submitJobAsUser(myConf, "user1");
+    Job job = submitJobAsUser(myConf, jobSubmitter);
 
-    final JobID jobId = job.getID();
+    final JobID jobId = job.getJobID();
 
     // Try operations as an unauthorized user.
-    verifyModifyJobAsUnauthorizedUser(myConf, jobId, "user2");
+    verifyModifyJobAsUnauthorizedUser(myConf, jobId, viewColleague);
 
     // Try operations as an authorized user.
-    verifyModifyJobAsAuthorizedUser(myConf, jobId, "user3");
+    verifyModifyJobAsAuthorizedUser(myConf, jobId, authorizedUser);
   }
 
   private void verifyModifyJobAsAuthorizedUser(
@@ -338,7 +373,7 @@ public class TestJobACLs {
           fail("AccessControlException expected..");
         } catch (IOException ioe) {
           assertTrue(ioe.getMessage().contains(
-            JobACLsManager.UNAUTHORIZED_JOB_ACCESS_ERROR + JobACL.MODIFY_JOB));
+              " cannot perform operation " + Operation.KILL_JOB));
         } catch (InterruptedException e) {
           fail("Exception .. interrupted.." + e);
         }
@@ -349,7 +384,7 @@ public class TestJobACLs {
           fail("AccessControlException expected..");
         } catch (IOException ioe) {
           assertTrue(ioe.getMessage().contains(
-            JobACLsManager.UNAUTHORIZED_JOB_ACCESS_ERROR + JobACL.MODIFY_JOB));
+              " cannot perform operation " + Operation.SET_JOB_PRIORITY));
         } catch (InterruptedException e) {
           fail("Exception .. interrupted.." + e);
         }
@@ -359,17 +394,16 @@ public class TestJobACLs {
     });
   }
 
-  private void verifyACLPersistence() throws IOException,
-      InterruptedException {
+  private void verifyACLPersistence() throws Exception {
 
     // Set the job up.
     final Configuration myConf = mr.createJobConf();
-    myConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, "user1,user2");
+    myConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, viewColleague + " group2");
 
     // Submit the job as user1
-    Job job = submitJobAsUser(myConf, "user1");
+    Job job = submitJobAsUser(myConf, jobSubmitter);
 
-    final JobID jobId = job.getID();
+    final JobID jobId = job.getJobID();
 
     // Kill the job and wait till it is actually killed so that it is written to
     // CompletedJobStore
@@ -387,11 +421,14 @@ public class TestJobACLs {
 
     final Configuration myNewJobConf = mr.createJobConf();
     // Now verify view-job works off CompletedJobStore
-    verifyViewJobAsAuthorizedUser(myNewJobConf, jobId, "user2");
+    verifyViewJobAsAuthorizedUser(myNewJobConf, jobId, viewColleague);
+    verifyViewJobAsAuthorizedUser(myNewJobConf, jobId, qAdmin);
 
     // Only JobCounters is persisted on the JobStore. So test counters only.
     UserGroupInformation unauthorizedUGI =
-        UserGroupInformation.createUserForTesting("user3", new String[] {});
+        UserGroupInformation.createUserForTesting(
+            modifyColleague, new String[] {});
+
     unauthorizedUGI.doAs(new PrivilegedExceptionAction<Object>() {
       @SuppressWarnings("null")
       @Override
@@ -413,7 +450,7 @@ public class TestJobACLs {
           fail("AccessControlException expected..");
         } catch (IOException ioe) {
           assertTrue(ioe.getMessage().contains(
-              JobACLsManager.UNAUTHORIZED_JOB_ACCESS_ERROR + JobACL.VIEW_JOB));
+              " cannot perform operation " + Operation.VIEW_JOB_COUNTERS));
         } catch (InterruptedException e) {
           fail("Exception .. interrupted.." + e);
         }

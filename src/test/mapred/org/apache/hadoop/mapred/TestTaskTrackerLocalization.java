@@ -39,11 +39,12 @@ import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.security.TokenCache;
-import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.server.tasktracker.Localizer;
 import org.apache.hadoop.mapreduce.util.MRAsyncDiskService;
+
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.security.UserGroupInformation;
-import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.Shell;
 import org.apache.hadoop.mapred.JvmManager.JvmEnv;
 import org.apache.hadoop.mapred.TaskController.JobInitializationContext;
@@ -121,12 +122,14 @@ public class TestTaskTrackerLocalization extends TestCase {
     System.setProperty("hadoop.log.dir", HADOOP_LOG_DIR.getAbsolutePath());
 
     trackerFConf = new JobConf();
+
     trackerFConf.set(FileSystem.FS_DEFAULT_NAME_KEY, "file:///");
     localDirs = new String[numLocalDirs];
     for (int i = 0; i < numLocalDirs; i++) {
       localDirs[i] = new File(ROOT_MAPRED_LOCAL_DIR, "0_" + i).getPath();
     }
     trackerFConf.setStrings(MRConfig.LOCAL_DIR, localDirs);
+    trackerFConf.setBoolean(MRConfig.MR_ACLS_ENABLED, true);
 
     // Create the job configuration file. Same as trackerConf in this test.
     jobConf = new JobConf(trackerFConf);
@@ -138,7 +141,16 @@ public class TestTaskTrackerLocalization extends TestCase {
     jobConf.setInt(MRJobConfig.USER_LOG_RETAIN_HOURS, 0);
     jobConf.setUser(getJobOwner().getShortUserName());
 
-    Job job = new Job(jobConf);
+    String queue = "default";
+    // set job queue name in job conf
+    jobConf.setQueueName(queue);
+    // Set queue admins acl in job conf similar to what JobClient does so that
+    // it goes into job conf also.
+    jobConf.set(toFullPropertyName(queue,
+        QueueACL.ADMINISTER_JOBS.getAclName()),
+        "qAdmin1,qAdmin2 qAdminsGroup1,qAdminsGroup2");
+
+    Job job = Job.getInstance(jobConf);
     String jtIdentifier = "200907202331";
     jobId = new JobID(jtIdentifier, 1);
 
@@ -186,6 +198,10 @@ public class TestTaskTrackerLocalization extends TestCase {
     tracker.runningJobs = new TreeMap<JobID, RunningJob>();
     tracker.setAsyncDiskService(new MRAsyncDiskService(trackerFConf));
     tracker.getAsyncDiskService().cleanupAllVolumes();
+
+    // Set up TaskTracker instrumentation
+    tracker.setTaskTrackerInstrumentation(
+        TaskTracker.createInstrumentation(tracker, trackerFConf));
 
     // setup task controller
     taskController = createTaskController();
@@ -287,13 +303,9 @@ public class TestTaskTrackerLocalization extends TestCase {
     File dir = new File(TEST_ROOT_DIR, jobId.toString());
     if(!dir.exists())
       assertTrue("faild to create dir="+dir.getAbsolutePath(), dir.mkdirs());
-    
-    File jobTokenFile = new File(dir, TokenCache.JOB_TOKEN_HDFS_FILE);
-    FileOutputStream fos = new FileOutputStream(jobTokenFile);
-    java.io.DataOutputStream out = new java.io.DataOutputStream(fos);
-    Token<JobTokenIdentifier> jt = new Token<JobTokenIdentifier>();
-    jt.write(out); // writing empty file, we don't the keys for this test 
-    out.close();
+    // writing empty file, we don't need the keys for this test
+    new Credentials().writeTokenStorageFile(new Path("file:///" + dir,
+        TokenCache.JOB_TOKEN_HDFS_FILE), new Configuration());
   }
 
   @Override
@@ -456,6 +468,36 @@ public class TestTaskTrackerLocalization extends TestCase {
     checkJobLocalization();
   }
 
+  /**
+   * Test that, if the job log dir can't be created, the job will fail
+   * during localization rather than at the time when the task itself
+   * tries to write into it.
+   */
+  public void testJobLocalizationFailsIfLogDirUnwritable()
+      throws Exception {
+    if (!canRun()) {
+      return;
+    }
+    
+    File logDir = TaskLog.getJobDir(jobId);
+    File logDirParent = logDir.getParentFile();
+    
+    try {
+      assertTrue(logDirParent.mkdirs() || logDirParent.isDirectory());
+      FileUtil.fullyDelete(logDir);
+      FileUtil.chmod(logDirParent.getAbsolutePath(), "000");
+
+      tracker.localizeJob(tip);
+      fail("No exception");
+    } catch (IOException ioe) {
+      LOG.info("Got exception", ioe);
+      assertTrue(ioe.getMessage().contains("Could not create job user log"));
+    } finally {
+      // Put it back just to be safe
+      FileUtil.chmod(logDirParent.getAbsolutePath(), "755");
+    }
+  }
+  
   protected void checkJobLocalization()
       throws IOException {
     // Check the directory structure
@@ -526,6 +568,37 @@ public class TestTaskTrackerLocalization extends TestCase {
         .exists());
     checkFilePermissions(jobLogDir.toString(), "drwx------", task.getUser(),
         taskTrackerUGI.getGroupNames()[0]);
+
+    // Make sure that the job ACLs file job-acls.xml exists in job userlog dir
+    File jobACLsFile = new File(jobLogDir, TaskTracker.jobACLsFile);
+    assertTrue("JobACLsFile is missing in the job userlog dir " + jobLogDir,
+        jobACLsFile.exists());
+
+    // With default task controller, the job-acls.xml file is owned by TT and
+    // permissions are 700
+    checkFilePermissions(jobACLsFile.getAbsolutePath(), "-rw-------",
+        taskTrackerUGI.getShortUserName(), taskTrackerUGI.getGroupNames()[0]);
+
+    validateJobACLsFileContent();
+  }
+
+  // Validate the contents of jobACLsFile ( i.e. user name, job-view-acl, queue
+  // name and queue-admins-acl ).
+  protected void validateJobACLsFileContent() {
+    JobConf jobACLsConf = TaskLogServlet.getConfFromJobACLsFile(jobId);
+
+    assertTrue(jobACLsConf.get("user.name").equals(
+        localizedJobConf.getUser()));
+    assertTrue(jobACLsConf.get(MRJobConfig.JOB_ACL_VIEW_JOB).
+        equals(localizedJobConf.get(MRJobConfig.JOB_ACL_VIEW_JOB)));
+
+    String queue = localizedJobConf.getQueueName();
+    assertTrue(queue.equalsIgnoreCase(jobACLsConf.getQueueName()));
+
+    String qACLName = toFullPropertyName(queue,
+        QueueACL.ADMINISTER_JOBS.getAclName());
+    assertTrue(jobACLsConf.get(qACLName).equals(
+        localizedJobConf.get(qACLName)));
   }
 
   /**
@@ -644,24 +717,6 @@ public class TestTaskTrackerLocalization extends TestCase {
         + expectedStderr.toString() + " Observed : "
         + attemptLogFiles[1].toString(), expectedStderr.toString().equals(
         attemptLogFiles[1].toString()));
-
-    // Make sure that the job ACLs file exists in the task log dir
-    File jobACLsFile = new File(logDir, TaskRunner.jobACLsFile);
-    assertTrue("JobACLsFile is missing in the task log dir " + logDir,
-        jobACLsFile.exists());
-
-    // With default task controller, the job-acls file is owned by TT and
-    // permissions are 700
-    checkFilePermissions(jobACLsFile.getAbsolutePath(), "-rwx------",
-        taskTrackerUGI.getShortUserName(), taskTrackerUGI.getGroupNames()[0]);
-
-    // Validate the contents of jobACLsFile(both user name and job-view-acls)
-    Configuration jobACLsConf = TaskLogServlet.getConfFromJobACLsFile(task
-        .getTaskID(), task.isTaskCleanupTask());
-    assertTrue(jobACLsConf.get(MRJobConfig.USER_NAME).equals(
-        localizedJobConf.getUser()));
-    assertTrue(jobACLsConf.get(MRJobConfig.JOB_ACL_VIEW_JOB).
-        equals(localizedJobConf.get(MRJobConfig.JOB_ACL_VIEW_JOB)));
   }
 
   /**

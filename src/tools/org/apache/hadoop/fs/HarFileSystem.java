@@ -49,7 +49,7 @@ import org.apache.hadoop.util.Progressable;
  */
 
 public class HarFileSystem extends FilterFileSystem {
-  public static final int VERSION = 2;
+  public static final int VERSION = 3;
   // uri representation of this Har filesystem
   private URI uri;
   // the version of this har filesystem
@@ -100,7 +100,8 @@ public class HarFileSystem extends FilterFileSystem {
     underLyingURI = decodeHarURI(name, conf);
     //  we got the right har Path- now check if this is 
     //truly a har filesystem
-    Path harPath = archivePath(new Path(name.toString()));
+    Path harPath = archivePath(
+      new Path(name.getScheme(), name.getAuthority(), name.getPath()));
     if (harPath == null) { 
       throw new IOException("Invalid path for the Har Filesystem. " + 
                            name.toString());
@@ -218,11 +219,16 @@ public class HarFileSystem extends FilterFileSystem {
     return tmp;
   }
   
+  private static String decodeString(String str)
+    throws UnsupportedEncodingException {
+    return URLDecoder.decode(str, "UTF-8");
+  }
+
   private String decodeFileName(String fname) 
     throws UnsupportedEncodingException {
     
-    if (version == 2){
-      return URLDecoder.decode(fname, "UTF-8");
+    if (version == 2 || version == 3){
+      return decodeString(fname);
     }
     return fname;
   }
@@ -297,16 +303,19 @@ public class HarFileSystem extends FilterFileSystem {
   // string manipulation is not good - so
   // just use the path api to do it.
   private Path makeRelative(String initial, Path p) {
+    String scheme = this.uri.getScheme();
+    String authority = this.uri.getAuthority();
     Path root = new Path(Path.SEPARATOR);
     if (root.compareTo(p) == 0)
-      return new Path(initial);
+      return new Path(scheme, authority, initial);
     Path retPath = new Path(p.getName());
     Path parent = p.getParent();
     for (int i=0; i < p.depth()-1; i++) {
       retPath = new Path(parent.getName(), retPath);
       parent = parent.getParent();
     }
-    return new Path(initial, retPath.toString());
+    return new Path(new Path(scheme, authority, initial),
+      retPath.toString());
   }
   
   /* this makes a path qualified in the har filesystem
@@ -327,24 +336,74 @@ public class HarFileSystem extends FilterFileSystem {
     //change this to Har uri 
     return new Path(uri.getScheme(), harAuth, tmpURI.getPath());
   }
+
+  /**
+   * Fix offset and length of block locations.
+   * Note that this method modifies the original array.
+   * @param locations block locations of har part file
+   * @param start the start of the desired range in the contained file
+   * @param len the length of the desired range
+   * @param fileOffsetInHar the offset of the desired file in the har part file
+   * @return block locations with fixed offset and length
+   */  
+  static BlockLocation[] fixBlockLocations(BlockLocation[] locations,
+                                          long start,
+                                          long len,
+                                          long fileOffsetInHar) {
+    // offset 1 past last byte of desired range
+    long end = start + len;
+
+    for (BlockLocation location : locations) {
+      // offset of part block relative to beginning of desired file
+      // (may be negative if file starts in this part block)
+      long harBlockStart = location.getOffset() - fileOffsetInHar;
+      // offset 1 past last byte of har block relative to beginning of
+      // desired file
+      long harBlockEnd = harBlockStart + location.getLength();
+      
+      if (start > harBlockStart) {
+        // desired range starts after beginning of this har block
+        // fix offset to beginning of relevant range (relative to desired file)
+        location.setOffset(start);
+        // fix length to relevant portion of har block
+        location.setLength(location.getLength() - (start - harBlockStart));
+      } else {
+        // desired range includes beginning of this har block
+        location.setOffset(harBlockStart);
+      }
+      
+      if (harBlockEnd > end) {
+        // range ends before end of this har block
+        // fix length to remove irrelevant portion at the end
+        location.setLength(location.getLength() - (harBlockEnd - end));
+      }
+    }
+    
+    return locations;
+  }
   
   /**
-   * get block locations from the underlying fs
+   * Get block locations from the underlying fs and fix their
+   * offsets and lengths.
    * @param file the input filestatus to get block locations
-   * @param start the start in the file
-   * @param len the length in the file
+   * @param start the start of the desired range in the contained file
+   * @param len the length of the desired range
    * @return block locations for this segment of file
    * @throws IOException
    */
   @Override
   public BlockLocation[] getFileBlockLocations(FileStatus file, long start,
-      long len) throws IOException {
-    // just fake block locations
-    // its fast and simpler
-    // doing various block location manipulation
-    // with part files adds a lot of overhead because 
-    // of the look ups of filestatus in index files
-    return new BlockLocation[]{ new BlockLocation() };
+                                               long len) throws IOException {
+    HarStatus hstatus = getFileHarStatus(file.getPath());
+    Path partPath = new Path(archivePath, hstatus.getPartName());
+    FileStatus partStatus = fs.getFileStatus(partPath);
+
+    // get all part blocks that overlap with the desired file blocks
+    BlockLocation[] locations = 
+      fs.getFileBlockLocations(partStatus,
+                               hstatus.getStartIndex() + start, len);
+
+    return fixBlockLocations(locations, start, len, hstatus.getStartIndex());
   }
   
   /**
@@ -515,17 +574,24 @@ public class HarFileSystem extends FilterFileSystem {
       }
     }
 
+    long modTime = 0;
+    if (version < 3) {
+      modTime = underlying.getModificationTime();
+    } else if (version == 3) {
+      modTime = h.getModificationTime();
+    }
+
     return new FileStatus(
         h.isDir()? 0L: h.getLength(),
         h.isDir(),
         underlying.getReplication(),
         underlying.getBlockSize(),
-        underlying.getModificationTime(),
+        modTime,
         underlying.getAccessTime(),
-        new FsPermission(underlying.getPermission()),
+        underlying.getPermission(),
         underlying.getOwner(),
         underlying.getGroup(),
-        makeRelative(this.uri.toString(), new Path(h.name)));
+        makeRelative(this.uri.getPath(), new Path(h.name)));
   }
 
   // a single line parser for hadoop archives status 
@@ -540,6 +606,7 @@ public class HarFileSystem extends FilterFileSystem {
     String partName;
     long startIndex;
     long length;
+    long modificationTime = 0;
     public HarStatus(String harString) throws UnsupportedEncodingException {
       String[] splits = harString.split(" ");
       this.name = decodeFileName(splits[0]);
@@ -548,11 +615,36 @@ public class HarFileSystem extends FilterFileSystem {
       this.partName = splits[2];
       this.startIndex = Long.parseLong(splits[3]);
       this.length = Long.parseLong(splits[4]);
+
+      String[] propSplits = null;
+      // propSplits is used to retrieve the metainformation that Har versions
+      // 1 & 2 missed (modification time, permission, owner group).
+      // These fields are stored in an encoded string placed in different
+      // locations depending on whether it's a file or directory entry.
+      // If it's a directory, the string will be placed at the partName
+      // location (directories have no partName because they don't have data
+      // to be stored). This is done because the number of fields in a
+      // directory entry is unbounded (all children are listed at the end)
+      // If it's a file, the string will be the last field.
       if (isDir) {
+        if (version == 3){
+          propSplits = decodeString(this.partName).split(" ");
+        }
         children = new ArrayList<String>();
         for (int i = 5; i < splits.length; i++) {
           children.add(decodeFileName(splits[i]));
         }
+      } else if (version == 3) {
+        propSplits = decodeString(splits[5]).split(" ");
+      }
+
+      if (propSplits != null && propSplits.length >= 4) {
+        modificationTime = Long.parseLong(propSplits[0]);
+        // the fields below are stored in the file but are currently not used
+        // by HarFileSystem
+        // permission = new FsPermission(Short.parseShort(propSplits[1]));
+        // owner = decodeString(propSplits[2]);
+        // group = decodeString(propSplits[3]);
       }
     }
     public boolean isDir() {
@@ -578,6 +670,9 @@ public class HarFileSystem extends FilterFileSystem {
     public long getLength() {
       return length;
     }
+    public long getModificationTime() {
+      return modificationTime;
+    }
   }
   
   /**
@@ -591,6 +686,11 @@ public class HarFileSystem extends FilterFileSystem {
    */
   @Override
   public FileStatus getFileStatus(Path f) throws IOException {
+    HarStatus hstatus = getFileHarStatus(f);
+    return toFileStatus(hstatus, null);
+  }
+
+  private HarStatus getFileHarStatus(Path f) throws IOException {
     // get the fs DataInputStream for the underlying file
     // look up the index.
     Path p = makeQualified(f);
@@ -602,11 +702,8 @@ public class HarFileSystem extends FilterFileSystem {
     if (readStr == null) {
       throw new FileNotFoundException("File: " +  f + " does not exist in " + uri);
     }
-    HarStatus hstatus = null;
-    hstatus = new HarStatus(readStr);
-    return toFileStatus(hstatus, null);
+    return new HarStatus(readStr);
   }
-
   /**
    * @return null since no checksum algorithm is implemented.
    */
@@ -622,17 +719,7 @@ public class HarFileSystem extends FilterFileSystem {
   @Override
   public FSDataInputStream open(Path f, int bufferSize) throws IOException {
     // get the fs DataInputStream for the underlying file
-    // look up the index.
-    Path p = makeQualified(f);
-    Path harPath = getPathInHar(p);
-    if (harPath == null) {
-      throw new IOException("Invalid file name: " + f + " in " + uri);
-    }
-    String readStr = fileStatusInIndex(harPath);
-    if (readStr == null) {
-      throw new FileNotFoundException(f + ": not found in " + archivePath);
-    }
-    HarStatus hstatus = new HarStatus(readStr); 
+    HarStatus hstatus = getFileHarStatus(f);
     // we got it.. woo hooo!!! 
     if (hstatus.isDir()) {
       throw new FileNotFoundException(f + " : not a file in " +

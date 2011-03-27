@@ -32,6 +32,7 @@ import java.util.Map.Entry;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -92,6 +93,13 @@ public class JobHistory {
     Collections.<JobID,MovedFileInfo>synchronizedMap(
         new LinkedHashMap<JobID, MovedFileInfo>());
 
+  // JobHistory filename regex
+  public static final Pattern JOBHISTORY_FILENAME_REGEX = 
+    Pattern.compile("(" + JobID.JOBID_REGEX + ")_.+");
+  // JobHistory conf-filename regex
+  public static final Pattern CONF_FILENAME_REGEX =
+    Pattern.compile("(" + JobID.JOBID_REGEX + ")_conf.xml(?:\\.[0-9]+\\.old)?");
+  
   private static class MovedFileInfo {
     private final String historyFile;
     private final long timestamp;
@@ -144,8 +152,9 @@ public class JobHistory {
     String doneLocation =
       conf.get(JTConfig.JT_JOBHISTORY_COMPLETED_LOCATION);
     if (doneLocation != null) {
-      done = fs.makeQualified(new Path(doneLocation));
-      doneDirFs = fs;
+      Path donePath = new Path(doneLocation);
+      doneDirFs = donePath.getFileSystem(conf);
+      done = doneDirFs.makeQualified(donePath);
     } else {
       done = logDirFs.makeQualified(new Path(logDir, "done"));
       doneDirFs = logDirFs;
@@ -276,8 +285,7 @@ public class JobHistory {
   
     FSDataOutputStream out = logDirFs.create(logFile, 
         new FsPermission(JobHistory.HISTORY_FILE_PERMISSION),
-        EnumSet.of(CreateFlag.OVERWRITE), 
-        defaultBufferSize, 
+        true, defaultBufferSize, 
         logDirFs.getDefaultReplication(), 
         jobHistoryBlockSize, null);
   
@@ -296,8 +304,7 @@ public class JobHistory {
         if (!logDirFs.exists(logDirConfPath)) {
           jobFileOut = logDirFs.create(logDirConfPath,
               new FsPermission(JobHistory.HISTORY_FILE_PERMISSION),
-              EnumSet.of(CreateFlag.OVERWRITE),
-              defaultBufferSize,
+              true, defaultBufferSize,
               logDirFs.getDefaultReplication(),
               logDirFs.getDefaultBlockSize(), null);
           jobConf.writeXml(jobFileOut);
@@ -374,13 +381,20 @@ public class JobHistory {
     return jobFilePath;
   }
 
+  /**
+   * Generates a suffix for old/stale jobhistory files
+   * Pattern : . + identifier + .old
+   */
+  public static String getOldFileSuffix(String identifier) {
+    return "." + identifier + JobHistory.OLD_SUFFIX;
+  }
+  
   private void moveOldFiles() throws IOException {
     //move the log files remaining from last run to the DONE folder
     //suffix the file name based on Job tracker identifier so that history
     //files with same job id don't get over written in case of recovery.
     FileStatus[] files = logDirFs.listStatus(logDir);
-    String jtIdentifier = jobTracker.getTrackerIdentifier();
-    String fileSuffix = "." + jtIdentifier + JobHistory.OLD_SUFFIX;
+    String fileSuffix = getOldFileSuffix(jobTracker.getTrackerIdentifier());
     for (FileStatus fileStatus : files) {
       Path fromPath = fileStatus.getPath();
       if (fromPath.equals(done)) { //DONE can be a subfolder of log dir
@@ -396,7 +410,9 @@ public class JobHistory {
         LOG.warn("Unable to move " + fromPath +", deleting it");
         try {
           boolean b = logDirFs.delete(fromPath, false);
-          LOG.debug("Deletion of corrupt file " + fromPath + " returned " + b);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Deletion of corrupt file " + fromPath + " returned " + b);
+          }
         } catch (IOException ioe) {
           // Cannot delete either? Just log and carry on
           LOG.warn("Unable to delete " + fromPath + "Exception: " +

@@ -38,6 +38,7 @@ import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.Partitioner;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
+import org.apache.hadoop.security.Credentials;
 
 /**
  * A {@link Mapper} which wraps a given one to allow custom 
@@ -199,6 +200,11 @@ public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     }
 
     @Override
+    public boolean getTaskCleanupNeeded() {
+      return mapContext.getTaskCleanupNeeded();
+    }
+
+    @Override
     public Path[] getLocalCacheArchives() throws IOException {
       return mapContext.getLocalCacheArchives();
     }
@@ -305,6 +311,11 @@ public class WrappedMapper<KEYIN, VALUEIN, KEYOUT, VALUEOUT>
     @Override
     public String getUser() {
       return mapContext.getUser();
+    }
+
+    @Override
+    public Credentials getCredentials() {
+      return mapContext.getCredentials();
     }
   }
 }

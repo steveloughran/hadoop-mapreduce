@@ -44,6 +44,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem.Statistics;
+import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.io.DataInputBuffer;
 import org.apache.hadoop.io.RawComparator;
 import org.apache.hadoop.io.Text;
@@ -59,8 +60,11 @@ import org.apache.hadoop.mapreduce.JobStatus;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.lib.reduce.WrappedReducer;
 import org.apache.hadoop.mapreduce.task.ReduceContextImpl;
+import org.apache.hadoop.mapreduce.util.ResourceCalculatorPlugin;
+import org.apache.hadoop.mapreduce.util.ResourceCalculatorPlugin.*;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.util.Progress;
 import org.apache.hadoop.util.Progressable;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -76,7 +80,6 @@ abstract public class Task implements Writable, Configurable {
     LogFactory.getLog(Task.class);
 
   public static String MERGED_OUTPUT_PREFIX = ".merged";
-  
 
   /**
    * Counters to measure the usage of the different file systems.
@@ -122,6 +125,11 @@ abstract public class Task implements Writable, Configurable {
   protected boolean jobCleanup = false;
   protected boolean jobSetup = false;
   protected boolean taskCleanup = false;
+ 
+  // An opaque data field used to attach extra data to each task. This is used
+  // by the Hadoop scheduler for Mesos to associate a Mesos task ID with each
+  // task and recover these IDs on the TaskTracker.
+  protected BytesWritable extraData = new BytesWritable(); 
   
   //skip ranges based on failed ranges from previous attempts
   private SortedRanges skipRanges = new SortedRanges();
@@ -132,7 +140,10 @@ abstract public class Task implements Writable, Configurable {
   private volatile long currentRecStartIndex; 
   private Iterator<Long> currentRecIndexIterator = 
     skipRanges.skipRangeIterator();
-  
+
+  private ResourceCalculatorPlugin resourceCalculator = null;
+  private long initCpuCumulativeTime = 0;
+
   protected JobConf conf;
   protected MapOutputFile mapOutputFile = new MapOutputFile();
   protected LocalDirAllocator lDirAlloc;
@@ -404,6 +415,7 @@ abstract public class Task implements Writable, Configurable {
     out.writeBoolean(writeSkipRecs);
     out.writeBoolean(taskCleanup);
     Text.writeString(out, user);
+    extraData.write(out);
   }
   
   public void readFields(DataInput in) throws IOException {
@@ -428,6 +440,7 @@ abstract public class Task implements Writable, Configurable {
       setPhase(TaskStatus.Phase.CLEANUP);
     }
     user = Text.readString(in);
+    extraData.readFields(in);
   }
 
   @Override
@@ -483,7 +496,9 @@ abstract public class Task implements Writable, Configurable {
       setState(TaskStatus.State.RUNNING);
     }
     if (useNewApi) {
-      LOG.debug("using new api for output committer");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("using new api for output committer");
+      }
       outputFormat =
         ReflectionUtils.newInstance(taskContext.getOutputFormatClass(), job);
       committer = outputFormat.getOutputCommitter(taskContext);
@@ -500,6 +515,16 @@ abstract public class Task implements Writable, Configurable {
       }
     }
     committer.setupTask(taskContext);
+    Class<? extends ResourceCalculatorPlugin> clazz =
+        conf.getClass(TTConfig.TT_RESOURCE_CALCULATOR_PLUGIN,
+            null, ResourceCalculatorPlugin.class);
+    resourceCalculator = ResourceCalculatorPlugin
+            .getResourceCalculatorPlugin(clazz, conf);
+    LOG.info(" Using ResourceCalculatorPlugin : " + resourceCalculator);
+    if (resourceCalculator != null) {
+      initCpuCumulativeTime =
+        resourceCalculator.getProcResourceValues().getCumulativeCpuTime();
+    }
   }
   
   @InterfaceAudience.Private
@@ -590,7 +615,7 @@ abstract public class Task implements Writable, Configurable {
       } else {
         return split;
       }
-    }    
+    }  
     /** 
      * The communication thread handles communication with the parent (Task Tracker). 
      * It sends progress updates if progress has been made or if the task needs to 
@@ -609,8 +634,10 @@ abstract public class Task implements Writable, Configurable {
             Thread.sleep(PROGRESS_INTERVAL);
           } 
           catch (InterruptedException e) {
-            LOG.debug(getTaskID() + " Progress/ping thread exiting " +
-            "since it got interrupted");
+            if (LOG.isDebugEnabled()) {
+              LOG.debug(getTaskID() + " Progress/ping thread exiting " +
+                        "since it got interrupted");
+            }
             break;
           }
 
@@ -679,7 +706,9 @@ abstract public class Task implements Writable, Configurable {
     SortedRanges.Range range = 
       new SortedRanges.Range(currentRecStartIndex, len);
     taskStatus.setNextRecordRange(range);
-    LOG.debug("sending reportNextRecordRange " + range);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("sending reportNextRecordRange " + range);
+    }
     umbilical.reportNextRecordRange(taskId, range);
   }
 
@@ -691,6 +720,24 @@ abstract public class Task implements Writable, Configurable {
     TaskReporter reporter = new TaskReporter(getProgress(), umbilical);
     reporter.startCommunicationThread();
     return reporter;
+  }
+
+  /**
+   * Update resource information counters
+   */
+  void updateResourceCounters() {
+    if (resourceCalculator == null) {
+      return;
+    }
+    ProcResourceValues res = resourceCalculator.getProcResourceValues();
+    long cpuTime = res.getCumulativeCpuTime();
+    long pMem = res.getPhysicalMemorySize();
+    long vMem = res.getVirtualMemorySize();
+    // Remove the CPU time consumed previously by JVM reuse
+    cpuTime -= initCpuCumulativeTime;
+    counters.findCounter(TaskCounter.CPU_MILLISECONDS).setValue(cpuTime);
+    counters.findCounter(TaskCounter.PHYSICAL_MEMORY_BYTES).setValue(pMem);
+    counters.findCounter(TaskCounter.VIRTUAL_MEMORY_BYTES).setValue(vMem);
   }
 
   /**
@@ -792,6 +839,7 @@ abstract public class Task implements Writable, Configurable {
     }
 
     gcUpdater.incrementGcCounter();
+    updateResourceCounters();
   }
 
   public void done(TaskUmbilicalProtocol umbilical,
@@ -1311,7 +1359,8 @@ abstract public class Task implements Writable, Configurable {
       }
       // make a task context so we can get the classes
       org.apache.hadoop.mapreduce.TaskAttemptContext taskContext =
-        new org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl(job, taskId);
+        new org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl(job, taskId,
+            reporter);
       Class<? extends org.apache.hadoop.mapreduce.Reducer<K,V,K,V>> newcls = 
         (Class<? extends org.apache.hadoop.mapreduce.Reducer<K,V,K,V>>)
            taskContext.getCombinerClass();
@@ -1431,5 +1480,13 @@ abstract public class Task implements Writable, Configurable {
                                                 valueClass);
       reducer.run(reducerContext);
     } 
+  }
+
+  BytesWritable getExtraData() {
+    return extraData;
+  }
+
+  void setExtraData(BytesWritable extraData) {
+    this.extraData = extraData;
   }
 }

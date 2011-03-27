@@ -38,6 +38,7 @@ import org.apache.hadoop.mapred.LocalJobRunner;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
 import org.apache.hadoop.mapreduce.lib.input.FileSplit;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
+import org.apache.hadoop.util.ReflectionUtils;
 
 import org.junit.Test;
 import junit.framework.TestCase;
@@ -48,6 +49,13 @@ import junit.framework.TestCase;
 public class TestLocalRunner extends TestCase {
 
   private static final Log LOG = LogFactory.getLog(TestLocalRunner.class);
+
+  private static int INPUT_SIZES[] =
+    new int[] { 50000, 500, 500, 20,  5000, 500};
+  private static int OUTPUT_SIZES[] =
+    new int[] { 1,     500, 500, 500, 500, 500};
+  private static int SLEEP_INTERVALS[] =
+    new int[] { 10000, 15,  15, 20, 250, 60 };
 
   private static class StressMapper
       extends Mapper<LongWritable, Text, LongWritable, Text> {
@@ -75,49 +83,12 @@ public class TestLocalRunner extends TestCase {
     public void map(LongWritable key, Text val, Context c)
         throws IOException, InterruptedException {
 
-      switch(threadId) {
-      case 0:
-        // Write a single value and be done.
+      // Write many values quickly.
+      for (int i = 0; i < OUTPUT_SIZES[threadId]; i++) {
         c.write(new LongWritable(0), val);
-        break;
-      case 1:
-      case 2:
-        // Write many values quickly.
-        for (int i = 0; i < 500; i++) {
-          c.write(new LongWritable(0), val);
-        }
-        break;
-      case 3:
-        // Write many values, using thread sleeps to delay this.
-        for (int i = 0; i < 50; i++) {
-          for (int j = 0; j < 10; j++) {
-            c.write(new LongWritable(0), val);
-          }
+        if (i % SLEEP_INTERVALS[threadId] == 1) {
           Thread.sleep(1);
         }
-        break;
-      case 4:
-        // Write many values, using busy-loops to delay this.
-        for (int i = 0; i < 500; i++) {
-          for (int j = 0; j < 10000; j++) {
-            this.exposedState++;
-          }
-          c.write(new LongWritable(0), val);
-        }
-        break;
-      case 5:
-        // Write many values, using very slow busy-loops to delay this.
-        for (int i = 0; i < 500; i++) {
-          for (int j = 0; j < 100000; j++) {
-            this.exposedState++;
-          }
-          c.write(new LongWritable(0), val);
-        }
-        break;
-      default:
-        // Write a single value and be done.
-        c.write(new LongWritable(0), val);
-        break;
       }
     }
 
@@ -194,12 +165,12 @@ public class TestLocalRunner extends TestCase {
   // This is the total number of map output records we expect to generate,
   // based on input file sizes (see createMultiMapsInput()) and the behavior
   // of the different StressMapper threads.
-  private final static int TOTAL_RECORDS = 50000
-      + (500 * 500)
-      + (500 * 500)
-      + (20 * 500)
-      + (5000 * 500)
-      + (500 * 500);
+  private static int TOTAL_RECORDS = 0;
+  static {
+    for (int i = 0; i < 6; i++) {
+      TOTAL_RECORDS += INPUT_SIZES[i] * OUTPUT_SIZES[i];
+    }
+  }
 
   private final String INPUT_DIR = "multiMapInput";
   private final String OUTPUT_DIR = "multiMapOutput";
@@ -238,13 +209,9 @@ public class TestLocalRunner extends TestCase {
 
     // Create input files, with sizes calibrated based on
     // the amount of work done in each mapper.
-    createInputFile(inputPath, 0, 50000);
-    createInputFile(inputPath, 1, 500);
-    createInputFile(inputPath, 2, 500);
-    createInputFile(inputPath, 3, 20);
-    createInputFile(inputPath, 4, 5000);
-    createInputFile(inputPath, 5, 500);
-
+    for (int i = 0; i < 6; i++) {
+      createInputFile(inputPath, i, INPUT_SIZES[i]);
+    }
     return inputPath;
   }
 
@@ -294,7 +261,7 @@ public class TestLocalRunner extends TestCase {
     createInputFile(inputPath, 0, 20);
 
     // Now configure and run the job.
-    Job job = new Job();
+    Job job = Job.getInstance();
     job.setMapperClass(GCMapper.class);
     job.setNumReduceTasks(0);
     job.getConfiguration().set("io.sort.mb", "25");
@@ -318,9 +285,9 @@ public class TestLocalRunner extends TestCase {
    * Run a test with several mappers in parallel, operating at different
    * speeds. Verify that the correct amount of output is created.
    */
-  @Test
+  @Test(timeout=120*1000)
   public void testMultiMaps() throws Exception {
-    Job job = new Job();
+    Job job = Job.getInstance();
 
     Path inputPath = createMultiMapsInput();
     Path outputPath = getOutputPath();
@@ -341,7 +308,39 @@ public class TestLocalRunner extends TestCase {
     FileInputFormat.addInputPath(job, inputPath);
     FileOutputFormat.setOutputPath(job, outputPath);
 
-    job.waitForCompletion(true);
+    final Thread toInterrupt = Thread.currentThread();
+    Thread interrupter = new Thread() {
+      public void run() {
+        try {
+          Thread.sleep(120*1000); // 2m
+          toInterrupt.interrupt();
+        } catch (InterruptedException ie) {}
+      }
+    };
+    LOG.info("Submitting job...");
+    job.submit();
+    LOG.info("Starting thread to interrupt main thread in 2 minutes");
+    interrupter.start();
+    LOG.info("Waiting for job to complete...");
+    try {
+      job.waitForCompletion(true);
+    } catch (InterruptedException ie) {
+      LOG.fatal("Interrupted while waiting for job completion", ie);
+      for (int i = 0; i < 10; i++) {
+        LOG.fatal("Dumping stacks");
+        ReflectionUtils.logThreadInfo(LOG, "multimap threads", 0);
+        Thread.sleep(1000);
+      }
+      throw ie;
+    }
+    LOG.info("Job completed, stopping interrupter");
+    interrupter.interrupt();
+    try {
+      interrupter.join();
+    } catch (InterruptedException ie) {
+      // it might interrupt us right as we interrupt it
+    }
+    LOG.info("Verifying output");
 
     verifyOutput(outputPath);
   }
@@ -352,7 +351,7 @@ public class TestLocalRunner extends TestCase {
    */
   @Test
   public void testInvalidMultiMapParallelism() throws Exception {
-    Job job = new Job();
+    Job job = Job.getInstance();
 
     Path inputPath = createMultiMapsInput();
     Path outputPath = getOutputPath();
@@ -413,7 +412,7 @@ public class TestLocalRunner extends TestCase {
 
   /** Test case for zero mappers */
   public void testEmptyMaps() throws Exception {
-    Job job = new Job();
+    Job job = Job.getInstance();
     Path outputPath = getOutputPath();
 
     Configuration conf = new Configuration();

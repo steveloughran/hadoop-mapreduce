@@ -29,6 +29,7 @@ import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FSDataOutputStream;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
 
 import junit.framework.TestCase;
@@ -56,7 +57,8 @@ public class TestIndexCache extends TestCase {
       Path f = new Path(p, Integer.toString(totalsize, 36));
       writeFile(fs, f, totalsize, partsPerMap);
       IndexRecord rec = cache.getIndexInformation(
-          Integer.toString(totalsize, 36), r.nextInt(partsPerMap), f);
+        Integer.toString(totalsize, 36), r.nextInt(partsPerMap), f,
+        UserGroupInformation.getCurrentUser().getShortUserName());
       checkRecord(rec, totalsize);
     }
 
@@ -67,7 +69,8 @@ public class TestIndexCache extends TestCase {
     for (int i = bytesPerFile; i < 1024 * 1024; i += bytesPerFile) {
       Path f = new Path(p, Integer.toString(i, 36));
       IndexRecord rec = cache.getIndexInformation(Integer.toString(i, 36),
-          r.nextInt(partsPerMap), f);
+        r.nextInt(partsPerMap), f,
+        UserGroupInformation.getCurrentUser().getShortUserName());
       checkRecord(rec, i);
     }
 
@@ -75,14 +78,16 @@ public class TestIndexCache extends TestCase {
     Path f = new Path(p, Integer.toString(totalsize, 36));
     writeFile(fs, f, totalsize, partsPerMap);
     cache.getIndexInformation(Integer.toString(totalsize, 36),
-        r.nextInt(partsPerMap), f);
+        r.nextInt(partsPerMap), f,
+        UserGroupInformation.getCurrentUser().getShortUserName());
     fs.delete(f, false);
 
     // oldest fails to read, or error
     boolean fnf = false;
     try {
       cache.getIndexInformation(Integer.toString(bytesPerFile, 36),
-          r.nextInt(partsPerMap), new Path(p, Integer.toString(bytesPerFile)));
+        r.nextInt(partsPerMap), new Path(p, Integer.toString(bytesPerFile)),
+        UserGroupInformation.getCurrentUser().getShortUserName());
     } catch (IOException e) {
       if (e.getCause() == null ||
           !(e.getCause()  instanceof FileNotFoundException)) {
@@ -97,11 +102,14 @@ public class TestIndexCache extends TestCase {
     // should find all the other entries
     for (int i = bytesPerFile << 1; i < 1024 * 1024; i += bytesPerFile) {
       IndexRecord rec = cache.getIndexInformation(Integer.toString(i, 36),
-          r.nextInt(partsPerMap), new Path(p, Integer.toString(i, 36)));
+          r.nextInt(partsPerMap), new Path(p, Integer.toString(i, 36)),
+          UserGroupInformation.getCurrentUser().getShortUserName());
       checkRecord(rec, i);
     }
     IndexRecord rec = cache.getIndexInformation(Integer.toString(totalsize, 36),
-        r.nextInt(partsPerMap), f);
+      r.nextInt(partsPerMap), f,
+      UserGroupInformation.getCurrentUser().getShortUserName());
+
     checkRecord(rec, totalsize);
   }
 
@@ -131,10 +139,55 @@ public class TestIndexCache extends TestCase {
     out.writeLong(iout.getChecksum().getValue());
     dout.close();
     try {
-      cache.getIndexInformation("badindex", 7, f);
+      cache.getIndexInformation("badindex", 7, f,
+        UserGroupInformation.getCurrentUser().getShortUserName());
       fail("Did not detect bad checksum");
     } catch (IOException e) {
       if (!(e.getCause() instanceof ChecksumException)) {
+        throw e;
+      }
+    }
+  }
+
+  public void testInvalidReduceNumberOrLength() throws Exception {
+    JobConf conf = new JobConf();
+    FileSystem fs = FileSystem.getLocal(conf).getRaw();
+    Path p = new Path(System.getProperty("test.build.data", "/tmp"),
+                      "cache").makeQualified(fs);
+    fs.delete(p, true);
+    conf.setInt(TTConfig.TT_INDEX_CACHE, 1);
+    final int partsPerMap = 1000;
+    final int bytesPerFile = partsPerMap * 24;
+    IndexCache cache = new IndexCache(conf);
+
+    // fill cache
+    Path feq = new Path(p, "invalidReduceOrPartsPerMap");
+    writeFile(fs, feq, bytesPerFile, partsPerMap);
+
+    // Number of reducers should always be less than partsPerMap as reducer
+    // numbers start from 0 and there cannot be more reducer than parts
+
+    try {
+      // Number of reducers equal to partsPerMap
+      cache.getIndexInformation("reduceEqualPartsPerMap", 
+               partsPerMap, // reduce number == partsPerMap
+               feq, UserGroupInformation.getCurrentUser().getShortUserName());
+      fail("Number of reducers equal to partsPerMap did not fail");
+    } catch (Exception e) {
+      if (!(e instanceof IOException)) {
+        throw e;
+      }
+    }
+
+    try {
+      // Number of reducers more than partsPerMap
+      cache.getIndexInformation(
+      "reduceMorePartsPerMap", 
+      partsPerMap + 1, // reduce number > partsPerMap
+      feq, UserGroupInformation.getCurrentUser().getShortUserName());
+      fail("Number of reducers more than partsPerMap did not fail");
+    } catch (Exception e) {
+      if (!(e instanceof IOException)) {
         throw e;
       }
     }

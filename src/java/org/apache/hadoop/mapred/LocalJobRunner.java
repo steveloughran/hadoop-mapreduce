@@ -41,6 +41,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.mapreduce.ClusterMetrics;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueInfo;
@@ -51,14 +52,14 @@ import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.filecache.TaskDistributedCacheManager;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
-import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
-import org.apache.hadoop.security.TokenStorage;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.State;
 import org.apache.hadoop.mapreduce.split.SplitMetaInfoReader;
 import org.apache.hadoop.mapreduce.split.JobSplit.TaskSplitMetaInfo;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.security.token.Token;
 
 /** Implements MapReduce locally, in-process, for debugging. */
@@ -87,6 +88,13 @@ public class LocalJobRunner implements ClientProtocol {
 
   public long getProtocolVersion(String protocol, long clientVersion) {
     return ClientProtocol.versionID;
+  }
+
+  @Override
+  public ProtocolSignature getProtocolSignature(String protocol,
+      long clientVersion, int clientMethodsHash) throws IOException {
+    return ProtocolSignature.getProtocolSignature(
+        this, protocol, clientVersion, clientMethodsHash);
   }
 
   private class Job extends Thread implements TaskUmbilicalProtocol {
@@ -122,6 +130,13 @@ public class LocalJobRunner implements ClientProtocol {
       return TaskUmbilicalProtocol.versionID;
     }
     
+    @Override
+    public ProtocolSignature getProtocolSignature(String protocol,
+        long clientVersion, int clientMethodsHash) throws IOException {
+      return ProtocolSignature.getProtocolSignature(
+          this, protocol, clientVersion, clientMethodsHash);
+    }
+
     public Job(JobID jobid, String jobSubmitDir) throws IOException {
       this.systemJobDir = new Path(jobSubmitDir);
       this.systemJobFile = new Path(systemJobDir, "job.xml");
@@ -587,15 +602,17 @@ public class LocalJobRunner implements ClientProtocol {
   }
 
   public org.apache.hadoop.mapreduce.JobStatus submitJob(
-      org.apache.hadoop.mapreduce.JobID jobid, String jobSubmitDir, TokenStorage ts) 
-      throws IOException {
-    TokenCache.setTokenStorage(ts);
-    return new Job(JobID.downgrade(jobid), jobSubmitDir).status;
+      org.apache.hadoop.mapreduce.JobID jobid, String jobSubmitDir,
+      Credentials credentials) throws IOException {
+    Job job = new Job(JobID.downgrade(jobid), jobSubmitDir);
+    job.job.setCredentials(credentials);
+    return job.status;
+
   }
 
   public void killJob(org.apache.hadoop.mapreduce.JobID id) {
-    jobs.get(id).killed = true;
-    jobs.get(id).interrupt();
+    jobs.get(JobID.downgrade(id)).killed = true;
+    jobs.get(JobID.downgrade(id)).interrupt();
   }
 
   public void setJobPriority(org.apache.hadoop.mapreduce.JobID id,
@@ -693,6 +710,13 @@ public class LocalJobRunner implements ClientProtocol {
     Path sysDir = new Path(
       conf.get(JTConfig.JT_SYSTEM_DIR, "/tmp/hadoop/mapred/system"));  
     return fs.makeQualified(sysDir).toString();
+  }
+
+  /**
+   * @see org.apache.hadoop.mapred.JobSubmissionProtocol#getQueueAdmins()
+   */
+  public AccessControlList getQueueAdmins(String queueName) throws IOException {
+	  return new AccessControlList(" ");// no queue admins for local job runner
   }
 
   /**

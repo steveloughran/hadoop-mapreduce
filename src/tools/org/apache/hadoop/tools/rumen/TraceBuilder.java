@@ -37,6 +37,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapreduce.jobhistory.HistoryEvent;
+import org.apache.hadoop.mapreduce.jobhistory.JobHistory;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -52,20 +53,6 @@ public class TraceBuilder extends Configured implements Tool {
   JobConfigurationParser jobConfParser;
   Outputter<LoggedJob> traceWriter;
   Outputter<LoggedNetworkTopology> topologyWriter;
-
-  // Needs to be interpreted greedily or otherwise constrained
-  static final String jobIDRegex = "job_[0-9]+_[0-9]+";
-
-  // returns jobID in Capturing Group 1
-  static final Pattern confFileNameRegex =
-      Pattern.compile("[^.].+_(" + jobIDRegex
-          + ")_conf.xml(?:\\.[0-9a-zA-Z]+)?");
-
-  // This can match text that confFileNameRegex will also match. The code
-  // gives precedence to confFileNameRegex . Returns jobID
-  // in Capturing Group 1
-  static final Pattern jobFileNameRegex =
-      Pattern.compile("[^.].+_(" + jobIDRegex + ")_.+");
 
   static class MyOptions {
     Class<? extends InputDemuxer> inputDemuxerClass = DefaultInputDemuxer.class;
@@ -94,17 +81,38 @@ public class TraceBuilder extends Configured implements Tool {
       topologyOutput = new Path(args[1 + switchTop]);
 
       for (int i = 2 + switchTop; i < args.length; ++i) {
-
-        Path thisPath = new Path(args[i]);
-
-        FileSystem fs = thisPath.getFileSystem(conf);
-        if (fs.getFileStatus(thisPath).isDir()) {
+        processInputArguments(args[i], conf);
+      }
+    }
+    
+    /** Processes the input file/folder arguments. If the input is a file then 
+     *  it is directly considered for further processing. If the input is a 
+     *  folder, then all the files in the input folder are considered for 
+     *  further processing.
+     *
+     *  NOTE: If the input represents a globbed path, then it is first flattened
+     *        and then the individual paths represented by the globbed input
+     *        path are processed.
+     */
+    private void processInputArguments(String input, Configuration conf) 
+    throws IOException {
+      Path inPath = new Path(input);
+      FileSystem fs = inPath.getFileSystem(conf);
+      FileStatus[] inStatuses = fs.globStatus(inPath);
+      
+      if (inStatuses == null || inStatuses.length == 0) {
+        return;
+      }
+      
+      for (FileStatus inStatus : inStatuses) {
+        Path thisPath = inStatus.getPath();
+        if (inStatus.isDirectory()) {
           FileStatus[] statuses = fs.listStatus(thisPath);
 
           List<String> dirNames = new ArrayList<String>();
 
           for (FileStatus s : statuses) {
-            if (s.isDir()) continue;
+            if (s.isDirectory()) continue;
             String name = s.getPath().getName();
 
             if (!(name.endsWith(".crc") || name.startsWith("."))) {
@@ -164,11 +172,23 @@ public class TraceBuilder extends Configured implements Tool {
    *         [especially for .crc files] we return null.
    */
   static String extractJobID(String fileName) {
-    return applyParser(fileName, jobFileNameRegex);
+    String jobId = applyParser(fileName, JobHistory.JOBHISTORY_FILENAME_REGEX);
+    if (jobId == null) {
+      // check if its a pre21 jobhistory file
+      jobId = applyParser(fileName, 
+                          Pre21JobHistoryConstants.JOBHISTORY_FILENAME_REGEX);
+    }
+    return jobId;
   }
 
   static boolean isJobConfXml(String fileName, InputStream input) {
-    return applyParser(fileName, confFileNameRegex) != null;
+    String jobId = applyParser(fileName, JobHistory.CONF_FILENAME_REGEX);
+    if (jobId == null) {
+      // check if its a pre21 jobhistory conf file
+      jobId = applyParser(fileName, 
+                          Pre21JobHistoryConstants.CONF_FILENAME_REGEX);
+    }
+    return jobId != null;
   }
 
   private void addInterestedProperties(List<String> interestedProperties,

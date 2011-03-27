@@ -63,20 +63,24 @@ public class MRAsyncDiskService {
    * Create a AsyncDiskServices with a set of volumes (specified by their
    * root directories).
    * 
-   * The AsyncDiskServices uses one ThreadPool per volume to do the async
-   * disk operations.
+   * The AsyncDiskServices uses one ThreadPool per volume to do the async disk
+   * operations.
    * 
    * @param localFileSystem The localFileSystem used for deletions.
-   * @param volumes The roots of the file system volumes.
+   * @param nonCanonicalVols The roots of the file system volumes, which may
+   * be absolte paths, or paths relative to the ${user.dir} system property
+   * ("cwd").
    */
-  public MRAsyncDiskService(FileSystem localFileSystem, String... volumes)
-      throws IOException {
+  public MRAsyncDiskService(FileSystem localFileSystem,
+      String... nonCanonicalVols) throws IOException {
     
-    this.volumes = new String[volumes.length];
-    for (int v = 0; v < volumes.length; v++) {
-      this.volumes[v] = normalizePath(volumes[v]);
-    }  
     this.localFileSystem = localFileSystem;
+    this.volumes = new String[nonCanonicalVols.length];
+    for (int v = 0; v < nonCanonicalVols.length; v++) {
+      this.volumes[v] = normalizePath(nonCanonicalVols[v]);
+      LOG.debug("Normalized volume: " + nonCanonicalVols[v]
+          + " -> " + this.volumes[v]);
+    }  
     
     asyncDiskService = new AsyncDiskService(this.volumes);
     
@@ -85,27 +89,32 @@ public class MRAsyncDiskService {
       // Create the root for file deletion
       Path absoluteSubdir = new Path(volumes[v], TOBEDELETED);
       if (!localFileSystem.mkdirs(absoluteSubdir)) {
-        throw new IOException("Cannot create " + TOBEDELETED + " in " + volumes[v]);
+        // We should tolerate missing volumes. 
+        LOG.warn("Cannot create " + TOBEDELETED + " in " + volumes[v] + ". Ignored.");
       }
     }
     
     // Create tasks to delete the paths inside the volumes
     for (int v = 0 ; v < volumes.length; v++) {
       Path absoluteSubdir = new Path(volumes[v], TOBEDELETED);
-      // List all files inside the volumes
-      FileStatus[] files = localFileSystem.listStatus(absoluteSubdir);
-      for (int f = 0; f < files.length; f++) {
-        // Get the relative file name to the root of the volume
-        String absoluteFilename = files[f].getPath().toUri().getPath();
-        String relative = getRelativePathName(absoluteFilename, volumes[v]);
-        if (relative == null) {
-          // This should never happen
-          throw new IOException("Cannot delete " + absoluteFilename
-              + " because it's outside of " + volumes[v]);
+      FileStatus[] files = null;
+      try {
+        // List all files inside the volumes TOBEDELETED sub directory
+        files = localFileSystem.listStatus(absoluteSubdir);
+      } catch (Exception e) {
+        // Ignore exceptions in listStatus
+        // We tolerate missing sub directories.
+      }
+      if (files != null) {
+        for (int f = 0; f < files.length; f++) {
+          // Get the relative file name to the root of the volume
+          String absoluteFilename = files[f].getPath().toUri().getPath();
+          String relative = TOBEDELETED + Path.SEPARATOR_CHAR
+              + files[f].getPath().getName();
+          DeleteTask task = new DeleteTask(volumes[v], absoluteFilename,
+              relative);
+          execute(volumes[v], task);
         }
-        DeleteTask task = new DeleteTask(volumes[v], absoluteFilename,
-            relative);
-        execute(volumes[v], task);
       }
     }
   }
@@ -239,9 +248,15 @@ public class MRAsyncDiskService {
     newPathName = TOBEDELETED + Path.SEPARATOR_CHAR + newPathName;
     
     Path source = new Path(volume, pathName);
-    Path target = new Path(volume, newPathName); 
+    Path target = new Path(volume, newPathName);
     try {
       if (!localFileSystem.rename(source, target)) {
+        // If the source does not exists, return false.
+        // This is necessary because rename can return false if the source  
+        // does not exists.
+        if (!localFileSystem.exists(source)) {
+          return false;
+        }
         // Try to recreate the parent directory just in case it gets deleted.
         if (!localFileSystem.mkdirs(new Path(volume, TOBEDELETED))) {
           throw new IOException("Cannot create " + TOBEDELETED + " under "
@@ -291,19 +306,21 @@ public class MRAsyncDiskService {
   public void cleanupAllVolumes() throws IOException {
     for (int v = 0; v < volumes.length; v++) {
       // List all files inside the volumes
-      FileStatus[] files = localFileSystem.listStatus(new Path(volumes[v]));
-      for (int f = 0; f < files.length; f++) {
-        // Get the relative file name to the root of the volume
-        String absoluteFilename = files[f].getPath().toUri().getPath();
-        String relative = getRelativePathName(absoluteFilename, volumes[v]);
-        if (relative == null) {
-          // This should never happen
-          throw new IOException("Cannot delete " + absoluteFilename
-              + " because it's outside of " + volumes[v]);
-        }
-        // Do not delete the current TOBEDELETED
-        if (!TOBEDELETED.equals(relative)) {
-          moveAndDeleteRelativePath(volumes[v], relative);
+      FileStatus[] files = null;
+      try {
+        files = localFileSystem.listStatus(new Path(volumes[v]));
+      } catch (Exception e) {
+        // Ignore exceptions in listStatus
+        // We tolerate missing volumes.
+      }
+      if (files != null) {
+        for (int f = 0; f < files.length; f++) {
+          // Get the file name - the last component of the Path
+          String entryName = files[f].getPath().getName();
+          // Do not delete the current TOBEDELETED
+          if (!TOBEDELETED.equals(entryName)) {
+            moveAndDeleteRelativePath(volumes[v], entryName);
+          }
         }
       }
     }
@@ -312,8 +329,9 @@ public class MRAsyncDiskService {
   /**
    * Returns the normalized path of a path.
    */
-  private static String normalizePath(String path) {
-    return (new Path(path)).toUri().getPath();
+  private String normalizePath(String path) {
+    return (new Path(path)).makeQualified(this.localFileSystem)
+        .toUri().getPath();
   }
   
   /**
@@ -322,7 +340,7 @@ public class MRAsyncDiskService {
    * @param volume Root of the volume.
    * @return null if the absolute path name is outside of the volume.
    */
-  private static String getRelativePathName(String absolutePathName,
+  private String getRelativePathName(String absolutePathName,
       String volume) {
     
     absolutePathName = normalizePath(absolutePathName);

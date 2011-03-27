@@ -115,8 +115,8 @@ public class TestMRWithDistributedCache extends TestCase {
       if (!"local".equals(
           context.getConfiguration().get(JTConfig.JT_IPC_ADDRESS))) {
         File symlinkFile = new File("distributed.first.symlink");
-        TestCase.assertTrue(symlinkFile.exists());
-        TestCase.assertEquals(1, symlinkFile.length());
+        TestCase.assertTrue("symlink distributed.first.symlink doesn't exist", symlinkFile.exists());
+        TestCase.assertEquals("symlink distributed.first.symlink length not 1", 1, symlinkFile.length());
       }
     }
   }
@@ -134,7 +134,7 @@ public class TestMRWithDistributedCache extends TestCase {
         makeJar(new Path(TEST_ROOT_DIR, "distributed.fourth.jar"), 4);
 
 
-    Job job = new Job(conf);
+    Job job = Job.getInstance(conf);
     job.setMapperClass(DistributedCacheChecker.class);
     job.setOutputFormatClass(NullOutputFormat.class);
     FileInputFormat.setInputPaths(job, first);
@@ -144,7 +144,11 @@ public class TestMRWithDistributedCache extends TestCase {
     job.addFileToClassPath(second);
     job.addArchiveToClassPath(third);
     job.addCacheArchive(fourth.toUri());
-    job.createSymlink();
+    
+    // don't create symlink for LocalJobRunner
+    if (!"local".equals(conf.get(JTConfig.JT_IPC_ADDRESS))) {
+      job.createSymlink();
+    }
     job.setMaxMapAttempts(1); // speed up failures
 
     job.submit();

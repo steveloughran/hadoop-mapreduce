@@ -31,7 +31,6 @@ import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.streaming.io.InputWriter;
 import org.apache.hadoop.streaming.io.OutputReader;
 import org.apache.hadoop.streaming.io.TextInputWriter;
-import org.apache.hadoop.util.StringUtils;
 
 /** A generic Mapper bridge.
  *  It delegates operations to an external program via stdin and stdout.
@@ -72,7 +71,8 @@ public class PipeMapper extends PipeMapRed implements Mapper {
     skipping = job.getBoolean(MRJobConfig.SKIP_RECORDS, false);
     if (mapInputWriterClass_.getCanonicalName().equals(TextInputWriter.class.getCanonicalName())) {
       String inputFormatClassName = job.getClass("mapred.input.format.class", TextInputFormat.class).getCanonicalName();
-      ignoreKey = inputFormatClassName.equals(TextInputFormat.class.getCanonicalName());
+      ignoreKey = job.getBoolean("stream.map.input.ignoreKey", 
+        inputFormatClassName.equals(TextInputFormat.class.getCanonicalName()));
     }
     
     try {
@@ -90,17 +90,13 @@ public class PipeMapper extends PipeMapRed implements Mapper {
   public void map(Object key, Object value, OutputCollector output, Reporter reporter) throws IOException {
     if (outerrThreadsThrowable != null) {
       mapRedFinished();
-      throw new IOException ("MROutput/MRErrThread failed:"
-                             + StringUtils.stringifyException(
-                                                              outerrThreadsThrowable));
+      throw new IOException("MROutput/MRErrThread failed:",
+          outerrThreadsThrowable);
     }
     try {
       // 1/4 Hadoop in
       numRecRead_++;
       maybeLogRecord();
-      if (debugFailDuring_ && numRecRead_ == 3) {
-        throw new IOException("debugFailDuring_");
-      }
 
       // 2/4 Hadoop to Tool
       if (numExceptions_ == 0) {
@@ -120,10 +116,9 @@ public class PipeMapper extends PipeMapRed implements Mapper {
       numExceptions_++;
       if (numExceptions_ > 1 || numRecWritten_ < minRecWrittenToEnableSkip_) {
         // terminate with failure
-        String msg = logFailure(io);
-        appendLogToJobLog("failure");
+        LOG.info(getContext() , io);
         mapRedFinished();
-        throw new IOException(msg);
+        throw io;
       } else {
         // terminate with success:
         // swallow input records although the stream processor failed/closed
@@ -132,7 +127,6 @@ public class PipeMapper extends PipeMapRed implements Mapper {
   }
 
   public void close() {
-    appendLogToJobLog("success");
     mapRedFinished();
   }
 

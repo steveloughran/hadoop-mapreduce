@@ -38,13 +38,19 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.hdfs.DFSClient;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
+import org.apache.hadoop.mapred.QueueACL;
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.mapreduce.split.JobSplitWriter;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.authorize.AccessControlList;
+import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.util.ReflectionUtils;
 import org.codehaus.jackson.JsonParseException;
 import org.codehaus.jackson.map.JsonMappingException;
@@ -56,6 +62,8 @@ class JobSubmitter {
   protected static final Log LOG = LogFactory.getLog(JobSubmitter.class);
   private FileSystem jtFs;
   private ClientProtocol submitClient;
+  private String submitHostName;
+  private String submitHostAddress;
   
   JobSubmitter(FileSystem submitFs, ClientProtocol submitClient) 
   throws IOException {
@@ -238,7 +246,8 @@ class JobSubmitter {
     //  set the public/private visibility of the archives and files
     TrackerDistributedCacheManager.determineCacheVisibilities(conf);
     // get DelegationToken for each cached file
-    TrackerDistributedCacheManager.getDelegationTokens(conf);
+    TrackerDistributedCacheManager.getDelegationTokens(conf, job
+        .getCredentials());
   }
   
   private URI getPathURI(Path destPath, String fragment) 
@@ -317,7 +326,15 @@ class JobSubmitter {
                                                      job.getConfiguration());
     //configure the command line options correctly on the submitting dfs
     Configuration conf = job.getConfiguration();
+    InetAddress ip = InetAddress.getLocalHost();
+    if (ip != null) {
+      submitHostAddress = ip.getHostAddress();
+      submitHostName = ip.getHostName();
+      conf.set(MRJobConfig.JOB_SUBMITHOST,submitHostName);
+      conf.set(MRJobConfig.JOB_SUBMITHOSTADDR,submitHostAddress);
+    }
     JobID jobId = submitClient.getNewJobID();
+    job.setJobID(jobId);
     Path submitJobDir = new Path(jobStagingArea, jobId.toString());
     JobStatus status = null;
     try {
@@ -325,8 +342,11 @@ class JobSubmitter {
       LOG.debug("Configuring job " + jobId + " with " + submitJobDir 
           + " as the submit dir");
       // get delegation token for the dir
-      TokenCache.obtainTokensForNamenodes(new Path [] {submitJobDir}, conf);
+      TokenCache.obtainTokensForNamenodes(job.getCredentials(),
+          new Path[] { submitJobDir }, conf);
       
+      populateTokenCache(conf, job.getCredentials());
+
       copyAndConfigureFiles(job, submitJobDir);
       Path submitJobFile = JobSubmissionFiles.getJobConfPath(submitJobDir);
 
@@ -338,15 +358,23 @@ class JobSubmitter {
       conf.setInt("mapred.map.tasks", maps);
       LOG.info("number of splits:" + maps);
 
+      // write "queue admins of the queue to which job is being submitted"
+      // to job file.
+      String queue = conf.get(MRJobConfig.QUEUE_NAME,
+          JobConf.DEFAULT_QUEUE_NAME);
+      AccessControlList acl = submitClient.getQueueAdmins(queue);
+      conf.set(toFullPropertyName(queue,
+          QueueACL.ADMINISTER_JOBS.getAclName()), acl.getAclString());
+
       // Write job file to submit dir
       writeConf(conf, submitJobFile);
       
       //
       // Now, actually submit the job (using the submit name)
       //
-      populateTokenCache(conf);
+      printTokens(jobId, job.getCredentials());
       status = submitClient.submitJob(
-          jobId, submitJobDir.toString(), TokenCache.getTokenStorage());
+          jobId, submitJobDir.toString(), job.getCredentials());
       if (status != null) {
         return status;
       } else {
@@ -355,7 +383,9 @@ class JobSubmitter {
     } finally {
       if (status == null) {
         LOG.info("Cleaning up the staging area " + submitJobDir);
-        jtFs.delete(submitJobDir, true);
+        if (jtFs != null && submitJobDir != null)
+          jtFs.delete(submitJobDir, true);
+
       }
     }
   }
@@ -388,6 +418,21 @@ class JobSubmitter {
     }
   }
   
+
+  
+  @SuppressWarnings("unchecked")
+  private void printTokens(JobID jobId,
+      Credentials credentials) throws IOException {
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Printing tokens for job: " + jobId);
+      for(Token<?> token: credentials.getAllTokens()) {
+        if (token.getKind().toString().equals("HDFS_DELEGATION_TOKEN")) {
+          LOG.debug("Submitting with " +
+              DFSClient.stringifyToken((Token<org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier>) token));
+        }
+      }
+    }
+  }
 
   @SuppressWarnings("unchecked")
   private <T extends InputSplit>
@@ -472,11 +517,19 @@ class JobSubmitter {
     }
   }
   
-  // get secret keys and tokens and store them into TokenCache
   @SuppressWarnings("unchecked")
-  private void populateTokenCache(Configuration conf) throws IOException{
-    // create TokenStorage object with user secretKeys
-    String tokensFileName = conf.get("tokenCacheFile");
+  private void readTokensFromFiles(Configuration conf, Credentials credentials)
+  throws IOException {
+    // add tokens and secrets coming from a token storage file
+    String binaryTokenFilename =
+      conf.get("mapreduce.job.credentials.binary");
+    if (binaryTokenFilename != null) {
+      Credentials binary = Credentials.readTokenStorageFile(
+          new Path("file:///" + binaryTokenFilename), conf);
+      credentials.addAll(binary);
+    }
+    // add secret keys coming from a json file
+    String tokensFileName = conf.get("mapreduce.job.credentials.json");
     if(tokensFileName != null) {
       LOG.info("loading user's secret keys from " + tokensFileName);
       String localFileName = new Path(tokensFileName).toUri().getPath();
@@ -489,7 +542,8 @@ class JobSubmitter {
           mapper.readValue(new File(localFileName), Map.class);
 
         for(Map.Entry<String, String> ent: nm.entrySet()) {
-          TokenCache.addSecretKey(new Text(ent.getKey()), ent.getValue().getBytes());
+          credentials.addSecretKey(new Text(ent.getKey()), ent.getValue()
+              .getBytes());
         }
       } catch (JsonMappingException e) {
         json_error = true;
@@ -499,16 +553,23 @@ class JobSubmitter {
       if(json_error)
         LOG.warn("couldn't parse Token Cache JSON file with user secret keys");
     }
-    
+  }
+
+  //get secret keys and tokens and store them into TokenCache
+  @SuppressWarnings("unchecked")
+  private void populateTokenCache(Configuration conf, Credentials credentials) 
+  throws IOException{
+    readTokensFromFiles(conf, credentials);
     // add the delegation tokens from configuration
     String [] nameNodes = conf.getStrings(MRJobConfig.JOB_NAMENODES);
-    LOG.info("adding the following namenodes' delegation tokens:" + Arrays.toString(nameNodes));
+    LOG.debug("adding the following namenodes' delegation tokens:" + 
+        Arrays.toString(nameNodes));
     if(nameNodes != null) {
       Path [] ps = new Path[nameNodes.length];
       for(int i=0; i< nameNodes.length; i++) {
         ps[i] = new Path(nameNodes[i]);
       }
-      TokenCache.obtainTokensForNamenodes(ps, conf);
+      TokenCache.obtainTokensForNamenodes(credentials, ps, conf);
     }
   }
 }

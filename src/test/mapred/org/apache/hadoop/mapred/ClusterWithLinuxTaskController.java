@@ -91,7 +91,7 @@ public class ClusterWithLinuxTaskController extends TestCase {
 
     @Override
     protected String getTaskControllerExecutablePath() {
-      return taskControllerExePath;
+      return new File(taskControllerExePath).getAbsolutePath();
     }
 
     void setTaskControllerExe(String execPath) {
@@ -175,6 +175,7 @@ public class ClusterWithLinuxTaskController extends TestCase {
     dfsCluster = new MiniDFSCluster(conf, NUMBER_OF_NODES, true, null);
     conf.set(TTConfig.TT_TASK_CONTROLLER,
         MyLinuxTaskController.class.getName());
+    conf.setBoolean(JTConfig.JT_PERSIST_JOBSTATUS, false);
     mrCluster =
         new MiniMRCluster(NUMBER_OF_NODES, dfsCluster.getFileSystem().getUri()
             .toString(), 4, null, null, conf);

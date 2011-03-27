@@ -46,6 +46,8 @@ import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsAction;
 import org.apache.hadoop.fs.permission.FsPermission;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.RunJar;
 import org.apache.hadoop.classification.InterfaceAudience;
 
@@ -148,7 +150,8 @@ public class TrackerDistributedCacheManager {
       boolean isArchive, long confFileStamp,
       Path currentWorkDir, boolean honorSymLinkConf, boolean isPublic)
       throws IOException {
-    String key = getKey(cache, conf, confFileStamp);
+    String key;
+    key = getKey(cache, conf, confFileStamp, getLocalizedCacheOwner(isPublic));
     CacheStatus lcacheStatus;
     Path localizedPath = null;
     synchronized (cachedArchives) {
@@ -174,8 +177,11 @@ public class TrackerDistributedCacheManager {
       // do the localization, after releasing the global lock
       synchronized (lcacheStatus) {
         if (!lcacheStatus.isInited()) {
+          FileSystem fs = FileSystem.get(cache, conf);
+          checkStampSinceJobStarted(conf, fs, cache, confFileStamp,
+              lcacheStatus, fileStatus);
           localizedPath = localizeCache(conf, cache, confFileStamp,
-              lcacheStatus, fileStatus, isArchive, isPublic);
+              lcacheStatus, isArchive, isPublic);
           lcacheStatus.initComplete();
         } else {
           localizedPath = checkCacheStatusValidity(conf, cache, confFileStamp,
@@ -200,12 +206,14 @@ public class TrackerDistributedCacheManager {
    * using the cache, you need to release the cache
    * @param cache The cache URI to be released
    * @param conf configuration which contains the filesystem the cache
+   * @param timeStamp the timestamp on the file represented by the cache URI
+   * @param owner the owner of the localized file
    * is contained in.
    * @throws IOException
    */
-  void releaseCache(URI cache, Configuration conf, long timeStamp)
-    throws IOException {
-    String key = getKey(cache, conf, timeStamp);
+  void releaseCache(URI cache, Configuration conf, long timeStamp,
+      String owner) throws IOException {
+    String key = getKey(cache, conf, timeStamp, owner);
     synchronized (cachedArchives) {
       CacheStatus lcacheStatus = cachedArchives.get(key);
       if (lcacheStatus == null) {
@@ -222,9 +230,9 @@ public class TrackerDistributedCacheManager {
   /*
    * This method is called from unit tests. 
    */
-  int getReferenceCount(URI cache, Configuration conf, long timeStamp) 
-    throws IOException {
-    String key = getKey(cache, conf, timeStamp);
+  int getReferenceCount(URI cache, Configuration conf, long timeStamp,
+      String owner) throws IOException {
+    String key = getKey(cache, conf, timeStamp, owner);
     synchronized (cachedArchives) {
       CacheStatus lcacheStatus = cachedArchives.get(key);
       if (lcacheStatus == null) {
@@ -232,6 +240,24 @@ public class TrackerDistributedCacheManager {
       }
       return lcacheStatus.refcount;
     }
+  }
+  
+  /**
+   * Get the user who should "own" the localized distributed cache file.
+   * If the cache is public, the tasktracker user is the owner. If private,
+   * the user that the task is running as, is the owner.
+   * @param isPublic
+   * @return the owner as a shortname string
+   * @throws IOException
+   */
+  static String getLocalizedCacheOwner(boolean isPublic) throws IOException {
+    String user;
+    if (isPublic) {
+      user = UserGroupInformation.getLoginUser().getShortUserName();
+    } else {
+      user = UserGroupInformation.getCurrentUser().getShortUserName();
+    }
+    return user;
   }
 
   /**
@@ -284,9 +310,9 @@ public class TrackerDistributedCacheManager {
     return path;
   }
 
-  String getKey(URI cache, Configuration conf, long timeStamp) 
+  String getKey(URI cache, Configuration conf, long timeStamp, String user)
       throws IOException {
-    return makeRelative(cache, conf) + String.valueOf(timeStamp);
+    return makeRelative(cache, conf) + String.valueOf(timeStamp) + user;
   }
   
   /**
@@ -333,7 +359,17 @@ public class TrackerDistributedCacheManager {
     if (!checkPermissionOfOther(fs, current, FsAction.READ)) {
       return false;
     }
-    current = current.getParent();
+    return ancestorsHaveExecutePermissions(fs, current.getParent());
+  }
+
+  /**
+   * Returns true if all ancestors of the specified path have the 'execute'
+   * permission set for all users (i.e. that other users can traverse
+   * the directory heirarchy to the given path)
+   */
+  static boolean ancestorsHaveExecutePermissions(FileSystem fs, Path path)
+    throws IOException {
+    Path current = path;
     while (current != null) {
       //the subdirs in the path should have execute permissions for others
       if (!checkPermissionOfOther(fs, current, FsAction.EXECUTE)) {
@@ -343,6 +379,7 @@ public class TrackerDistributedCacheManager {
     }
     return true;
   }
+
   /**
    * Checks for a given path whether the Other permissions on it 
    * imply the permission in the passed FsAction
@@ -404,7 +441,6 @@ public class TrackerDistributedCacheManager {
   Path localizeCache(Configuration conf,
                                     URI cache, long confFileStamp,
                                     CacheStatus cacheStatus,
-                                    FileStatus fileStatus,
                                     boolean isArchive, boolean isPublic)
   throws IOException {
     FileSystem fs = FileSystem.get(cache, conf);
@@ -488,9 +524,9 @@ public class TrackerDistributedCacheManager {
     return (filename.endsWith(".tgz") || filename.endsWith(".tar.gz") ||
            filename.endsWith(".tar"));
   }
-
-  // Checks if the cache has already been localized and is fresh
-  private boolean ifExistsAndFresh(Configuration conf, FileSystem fs,
+  
+  // ensure that the file on hdfs hasn't been modified since the job started
+  private long checkStampSinceJobStarted(Configuration conf, FileSystem fs,
                                           URI cache, long confFileStamp,
                                           CacheStatus lcacheStatus,
                                           FileStatus fileStatus)
@@ -502,13 +538,23 @@ public class TrackerDistributedCacheManager {
       dfsFileStamp = getTimestamp(conf, cache);
     }
 
-    // ensure that the file on hdfs hasn't been modified since the job started
     if (dfsFileStamp != confFileStamp) {
       LOG.fatal("File: " + cache + " has changed on HDFS since job started");
       throw new IOException("File: " + cache +
                             " has changed on HDFS since job started");
     }
+    
+    return dfsFileStamp;
+  }
 
+  // Checks if the cache has already been localized and is fresh
+  private boolean ifExistsAndFresh(Configuration conf, FileSystem fs,
+                                          URI cache, long confFileStamp,
+                                          CacheStatus lcacheStatus,
+                                          FileStatus fileStatus)
+  throws IOException {
+    long dfsFileStamp = checkStampSinceJobStarted(conf, fs, cache,
+        confFileStamp, lcacheStatus, fileStatus);
     if (dfsFileStamp != lcacheStatus.mtime) {
       return false;
     }
@@ -682,9 +728,11 @@ public class TrackerDistributedCacheManager {
   /**
    * For each archive or cache file - get the corresponding delegation token
    * @param job
+   * @param credentials
    * @throws IOException
    */
-  public static void getDelegationTokens(Configuration job) throws IOException {
+  public static void getDelegationTokens(Configuration job,
+      Credentials credentials) throws IOException {
     URI[] tarchives = DistributedCache.getCacheArchives(job);
     URI[] tfiles = DistributedCache.getCacheFiles(job);
     
@@ -704,7 +752,7 @@ public class TrackerDistributedCacheManager {
       }
     }
     
-    TokenCache.obtainTokensForNamenodes(ps, job);
+    TokenCache.obtainTokensForNamenodes(credentials, ps, job);
   }
   
   /**
@@ -768,43 +816,46 @@ public class TrackerDistributedCacheManager {
    * @param uriFiles The uri array of urifiles
    * @param uriArchives the uri array of uri archives
    */
-  public static boolean checkURIs(URI[]  uriFiles, URI[] uriArchives){
-    if ((uriFiles == null) && (uriArchives == null)){
+  public static boolean checkURIs(URI[] uriFiles, URI[] uriArchives) {
+    if ((uriFiles == null) && (uriArchives == null)) {
       return true;
     }
-    if (uriFiles != null){
-      for (int i = 0; i < uriFiles.length; i++){
-        String frag1 = uriFiles[i].getFragment();
-        if (frag1 == null)
+    // check if fragment is null for any uri
+    // also check if there are any conflicts in fragment names
+    Set<String> fragments = new HashSet<String>();
+    
+    // iterate over file uris
+    if (uriFiles != null) {
+      for (int i = 0; i < uriFiles.length; i++) {
+        String fragment = uriFiles[i].getFragment();
+        if (fragment == null) {
           return false;
-        for (int j=i+1; j < uriFiles.length; j++){
-          String frag2 = uriFiles[j].getFragment();
-          if (frag2 == null)
-            return false;
-          if (frag1.equalsIgnoreCase(frag2))
-            return false;
         }
-        if (uriArchives != null){
-          for (int j = 0; j < uriArchives.length; j++){
-            String frag2 = uriArchives[j].getFragment();
-            if (frag2 == null){
-              return false;
-            }
-            if (frag1.equalsIgnoreCase(frag2))
-              return false;
-            for (int k=j+1; k < uriArchives.length; k++){
-              String frag3 = uriArchives[k].getFragment();
-              if (frag3 == null)
-                return false;
-              if (frag2.equalsIgnoreCase(frag3))
-                return false;
-            }
-          }
+        String lowerCaseFragment = fragment.toLowerCase();
+        if (fragments.contains(lowerCaseFragment)) {
+          return false;
         }
+        fragments.add(lowerCaseFragment);
+      }
+    }
+    
+    // iterate over archive uris
+    if (uriArchives != null) {
+      for (int i = 0; i < uriArchives.length; i++) {
+        String fragment = uriArchives[i].getFragment();
+        if (fragment == null) {
+          return false;
+        }
+        String lowerCaseFragment = fragment.toLowerCase();
+        if (fragments.contains(lowerCaseFragment)) {
+          return false;
+        }
+        fragments.add(lowerCaseFragment);
       }
     }
     return true;
   }
+
   /**
    * This is to check the public/private visibility of the archives to be
    * localized.

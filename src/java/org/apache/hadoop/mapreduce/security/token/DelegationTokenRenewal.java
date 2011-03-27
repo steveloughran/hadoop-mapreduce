@@ -20,13 +20,13 @@ package org.apache.hadoop.mapreduce.security.token;
 
 import java.io.IOException;
 import java.net.URI;
-import org.apache.hadoop.security.AccessControlException;
-import java.util.ArrayList;
+import java.security.PrivilegedExceptionAction;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.Iterator;
-import java.util.List;
+import java.util.Set;
 import java.util.Timer;
 import java.util.TimerTask;
 
@@ -40,10 +40,12 @@ import org.apache.hadoop.hdfs.DistributedFileSystem;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.JobID;
-import org.apache.hadoop.security.TokenStorage;
+import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
-import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 
 
 @InterfaceAudience.Private
@@ -79,6 +81,7 @@ public class DelegationTokenRenewal {
     public void setTimerTask(TimerTask tTask) {
       timerTask = tTask;
     }
+    @Override
     public String toString() {
       return token + ";exp="+expirationDate;
     }
@@ -103,13 +106,10 @@ public class DelegationTokenRenewal {
   
   //managing the list of tokens using Map
   // jobId=>List<tokens>
-  private static List<DelegationTokenToRenew> delegationTokens = 
-    Collections.synchronizedList(new ArrayList<DelegationTokenToRenew>());
+  private static Set<DelegationTokenToRenew> delegationTokens = 
+    Collections.synchronizedSet(new HashSet<DelegationTokenToRenew>());
   //adding token
   private static void addTokenToList(DelegationTokenToRenew t) {
-    //check to see if the token already exists in the list
-    if (delegationTokens.contains(t))
-      return;
     delegationTokens.add(t);
   }
   
@@ -119,7 +119,7 @@ public class DelegationTokenRenewal {
   
   @SuppressWarnings("unchecked")
   public static synchronized void registerDelegationTokensForRenewal(
-      JobID jobId, TokenStorage ts, Configuration conf) {
+      JobID jobId, Credentials ts, Configuration conf) {
     if(ts==null)
       return; //nothing to add
     
@@ -164,6 +164,7 @@ public class DelegationTokenRenewal {
       } catch (AccessControlException ioe) {
         LOG.warn("failed to renew token:"+token, ioe);
         removeFailedDelegationToken(dttr);
+        throw new IOException("failed to renew token", ioe);
       } catch (Exception e) {
         LOG.warn("failed to renew token:"+token, e);
         // returns default expiration date
@@ -204,12 +205,20 @@ public class DelegationTokenRenewal {
   }
   
   private static DistributedFileSystem getDFSForToken(
-      Token<DelegationTokenIdentifier> token, Configuration conf) 
+      Token<DelegationTokenIdentifier> token, final Configuration conf) 
   throws Exception {
     DistributedFileSystem dfs = null;
     try {
-      URI uri = new URI (SCHEME + "://" + token.getService().toString());
-      dfs =  (DistributedFileSystem) FileSystem.get(uri, conf);
+      final URI uri = new URI (SCHEME + "://" + token.getService().toString());
+      dfs = 
+      UserGroupInformation.getLoginUser().doAs(
+          new PrivilegedExceptionAction<DistributedFileSystem>() {
+        public DistributedFileSystem run() throws IOException {
+          return (DistributedFileSystem) FileSystem.get(uri, conf);  
+        }
+      });
+
+      
     } catch (Exception e) {
       LOG.warn("Failed to create a dfs to renew for:" + token.getService(), e);
       throw e;

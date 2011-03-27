@@ -20,8 +20,6 @@ package org.apache.hadoop.mapreduce.lib.output;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.io.Writable;
-import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.mapreduce.*;
 import org.apache.hadoop.mapreduce.task.TaskAttemptContextImpl;
 import org.apache.hadoop.util.ReflectionUtils;
@@ -131,6 +129,11 @@ public class MultipleOutputs<KEYOUT, VALUEOUT> {
   private static final String COUNTERS_GROUP = MultipleOutputs.class.getName();
 
   /**
+   * Cache for the taskContexts
+   */
+  private Map<String, TaskAttemptContext> taskContexts = new HashMap<String, TaskAttemptContext>();
+
+  /**
    * Checks if a named output name is valid token.
    *
    * @param namedOutput named output Name
@@ -213,14 +216,14 @@ public class MultipleOutputs<KEYOUT, VALUEOUT> {
   private static Class<?> getNamedOutputKeyClass(JobContext job,
                                                 String namedOutput) {
     return job.getConfiguration().getClass(MO_PREFIX + namedOutput + KEY, null,
-      WritableComparable.class);
+      Object.class);
   }
 
   // Returns the value class for a named output.
-  private static Class<? extends Writable> getNamedOutputValueClass(
+  private static Class<?> getNamedOutputValueClass(
       JobContext job, String namedOutput) {
     return job.getConfiguration().getClass(MO_PREFIX + namedOutput + VALUE,
-      null, Writable.class);
+      null, Object.class);
   }
 
   /**
@@ -381,7 +384,8 @@ public class MultipleOutputs<KEYOUT, VALUEOUT> {
     checkBaseOutputPath(baseOutputPath);
     TaskAttemptContext taskContext = 
       new TaskAttemptContextImpl(context.getConfiguration(), 
-                                 context.getTaskAttemptID());
+                                 context.getTaskAttemptID(),
+                                 new WrappedStatusReporter(context));
     getRecordWriter(taskContext, baseOutputPath).write(key, value);
   }
 
@@ -422,18 +426,56 @@ public class MultipleOutputs<KEYOUT, VALUEOUT> {
    // Create a taskAttemptContext for the named output with 
    // output format and output key/value types put in the context
   private TaskAttemptContext getContext(String nameOutput) throws IOException {
+      
+    TaskAttemptContext taskContext = taskContexts.get(nameOutput);
+    
+    if (taskContext != null) {
+        return taskContext;
+    }
+    
     // The following trick leverages the instantiation of a record writer via
     // the job thus supporting arbitrary output formats.
     Job job = new Job(context.getConfiguration());
     job.setOutputFormatClass(getNamedOutputFormatClass(context, nameOutput));
     job.setOutputKeyClass(getNamedOutputKeyClass(context, nameOutput));
     job.setOutputValueClass(getNamedOutputValueClass(context, nameOutput));
-    TaskAttemptContext taskContext = 
-      new TaskAttemptContextImpl(job.getConfiguration(), 
-                                 context.getTaskAttemptID());
+    taskContext = new TaskAttemptContextImpl(job.getConfiguration(), context
+        .getTaskAttemptID(), new WrappedStatusReporter(context));
+
+    taskContexts.put(nameOutput, taskContext);
+
     return taskContext;
   }
-  
+
+  private static class WrappedStatusReporter extends StatusReporter {
+
+    TaskAttemptContext context;
+
+    public WrappedStatusReporter(TaskAttemptContext context) {
+      this.context = context;
+    }
+
+    @Override
+    public Counter getCounter(Enum<?> name) {
+      return context.getCounter(name);
+    }
+
+    @Override
+    public Counter getCounter(String group, String name) {
+      return context.getCounter(group, name);
+    }
+
+    @Override
+    public void progress() {
+      context.progress();
+    }
+
+    @Override
+    public void setStatus(String status) {
+      context.setStatus(status);
+    }
+  }
+
   /**
    * Closes all the opened outputs.
    * 

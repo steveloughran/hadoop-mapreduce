@@ -20,29 +20,28 @@ package org.apache.hadoop.mapreduce.security;
 
 import java.io.IOException;
 import java.net.URI;
-import java.util.Collection;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.DistributedFileSystem;
+import org.apache.hadoop.hdfs.HftpFileSystem;
 import org.apache.hadoop.hdfs.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapred.JobConf;
-import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
-import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.security.TokenStorage;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.KerberosName;
+import org.apache.hadoop.security.SecurityUtil;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.token.Token;
 import org.apache.hadoop.security.token.TokenIdentifier;
-import org.apache.hadoop.security.UserGroupInformation;
 
 
 /**
@@ -57,90 +56,94 @@ public class TokenCache {
   
   private static final Log LOG = LogFactory.getLog(TokenCache.class);
 
-  private static TokenStorage tokenStorage;
   
   /**
    * auxiliary method to get user's secret keys..
    * @param alias
    * @return secret key from the storage
    */
-  public static byte[] getSecretKey(Text alias) {
-    if(tokenStorage == null)
+  public static byte[] getSecretKey(Credentials credentials, Text alias) {
+    if(credentials == null)
       return null;
-    return tokenStorage.getSecretKey(alias);
+    return credentials.getSecretKey(alias);
   }
   
-  /**
-   * auxiliary methods to store user'  s secret keys
-   * @param alias
-   * @param key
-   */
-  public static void addSecretKey(Text alias, byte[] key) {
-    getTokenStorage().addSecretKey(alias, key);
-  }
-  
-  /**
-   * auxiliary method to add a delegation token
-   */
-  public static void addDelegationToken(
-      String namenode, Token<? extends TokenIdentifier> t) {
-    getTokenStorage().addToken(new Text(namenode), t);
-  }
-
-  /**
-   * auxiliary method 
-   * @return all the available tokens
-   */
-  public static Collection<Token<? extends TokenIdentifier>> getAllTokens() {
-    return getTokenStorage().getAllTokens();
-  }
   /**
    * Convenience method to obtain delegation tokens from namenodes 
    * corresponding to the paths passed.
+   * @param credentials
    * @param ps array of paths
    * @param conf configuration
    * @throws IOException
    */
-  public static void obtainTokensForNamenodes(Path [] ps, Configuration conf) 
-  throws IOException {
+  public static void obtainTokensForNamenodes(Credentials credentials,
+      Path[] ps, Configuration conf) throws IOException {
     if (!UserGroupInformation.isSecurityEnabled()) {
       return;
     }
-    obtainTokensForNamenodesInternal(ps, conf);
+    obtainTokensForNamenodesInternal(credentials, ps, conf);
   }
     
-  static void obtainTokensForNamenodesInternal(Path [] ps, Configuration conf)
-  throws IOException {
-    // get jobtracker principal id (for the renewer)
-    Text jtCreds = new Text(conf.get(JTConfig.JT_USER_NAME, ""));
-    
+  static void obtainTokensForNamenodesInternal(Credentials credentials,
+      Path[] ps, Configuration conf) throws IOException {
     for(Path p: ps) {
       FileSystem fs = FileSystem.get(p.toUri(), conf);
-      if(fs instanceof DistributedFileSystem) {
-        DistributedFileSystem dfs = (DistributedFileSystem)fs;
-        URI uri = fs.getUri();
-        String fs_addr = buildDTServiceName(uri);
-        
-        // see if we already have the token
-        Token<DelegationTokenIdentifier> token = 
-          TokenCache.getDelegationToken(fs_addr); 
-        if(token != null) {
-          LOG.debug("DT for " + token.getService()  + " is already present");
-          continue;
-        }
-        // get the token
-        token = dfs.getDelegationToken(jtCreds);
-        if(token==null) 
-          throw new IOException("Token from " + fs_addr + " is null");
+      obtainTokensForNamenodesInternal(fs, credentials, conf);
+    }
+  }
+  
+  /**
+   * get delegation token for a specific FS
+   * @param fs
+   * @param credentials
+   * @param p
+   * @param conf
+   * @throws IOException
+   */
+  static void obtainTokensForNamenodesInternal(FileSystem fs, 
+      Credentials credentials, Configuration conf) throws IOException {
 
-        token.setService(new Text(fs_addr));
-        TokenCache.addDelegationToken(fs_addr, token);
-        LOG.info("getting dt for " + p.toString() + ";uri="+ fs_addr + 
+    // get jobtracker principal id (for the renewer)
+    KerberosName jtKrbName = 
+      new KerberosName(conf.get(JTConfig.JT_USER_NAME,""));
+    
+    String delegTokenRenewer = jtKrbName.getShortName();
+    boolean readFile = true;
+
+    String fsName = fs.getCanonicalServiceName();
+    if (TokenCache.getDelegationToken(credentials, fsName) == null) {
+      //TODO: Need to come up with a better place to put
+      //this block of code to do with reading the file
+      if (readFile) {
+        readFile = false;
+        String binaryTokenFilename =
+          conf.get("mapreduce.job.credentials.binary");
+        if (binaryTokenFilename != null) {
+          Credentials binary;
+          try {
+            binary = Credentials.readTokenStorageFile(
+                new Path("file:///" +  binaryTokenFilename), conf);
+          } catch (IOException e) {
+            throw new RuntimeException(e);
+          }
+          credentials.addAll(binary);
+        }
+        if (TokenCache.getDelegationToken(credentials, fsName) != null) {
+          LOG.debug("DT for " + fsName  + " is already present");
+          return;
+        }
+      }
+      Token<?> token = fs.getDelegationToken(delegTokenRenewer);
+      if (token != null) {
+        Text fsNameText = new Text(fsName);
+        token.setService(fsNameText);
+        credentials.addToken(fsNameText, token);
+        LOG.info("Got dt for " + fs.getUri() + ";uri="+ fsName + 
             ";t.service="+token.getService());
       }
     }
   }
-  
+
   /**
    * file name used on HDFS for generated job token
    */
@@ -161,50 +164,10 @@ public class TokenCache {
    */
   @SuppressWarnings("unchecked")
   @InterfaceAudience.Private
-  public static Token<DelegationTokenIdentifier> 
-  getDelegationToken(String namenode) {
-    return (Token<DelegationTokenIdentifier>)getTokenStorage().
-            getToken(new Text(namenode));
-  }
-
-  /**
-   * @return TokenStore object
-   */
-  @InterfaceAudience.Private
-  public static TokenStorage getTokenStorage() {
-    if(tokenStorage==null)
-      tokenStorage = new TokenStorage();
-    
-    return tokenStorage;
-  }
-  
-  /**
-   * sets TokenStorage
-   * @param ts
-   */
-  @InterfaceAudience.Private
-  public static void setTokenStorage(TokenStorage ts) {
-    if(tokenStorage != null)
-      LOG.warn("Overwriting existing token storage with # keys=" + 
-          tokenStorage.numberOfSecretKeys());
-    tokenStorage = ts;
-  }
-  
-  /**
-   * load token storage and stores it
-   * @param conf
-   * @return Loaded TokenStorage object
-   * @throws IOException
-   */
-  @InterfaceAudience.Private
-  public static TokenStorage loadTaskTokenStorage(String fileName, JobConf conf)
-  throws IOException {
-    if(tokenStorage != null)
-      return tokenStorage;
-    
-    tokenStorage = loadTokens(fileName, conf);
-    
-    return tokenStorage;
+  public static Token<DelegationTokenIdentifier> getDelegationToken(
+      Credentials credentials, String namenode) {
+    return (Token<DelegationTokenIdentifier>) credentials.getToken(new Text(
+        namenode));
   }
   
   /**
@@ -213,20 +176,18 @@ public class TokenCache {
    * @throws IOException
    */
   @InterfaceAudience.Private
-  public static TokenStorage loadTokens(String jobTokenFile, JobConf conf) 
+  public static Credentials loadTokens(String jobTokenFile, JobConf conf) 
   throws IOException {
-    Path localJobTokenFile = new Path (jobTokenFile);
-    FileSystem localFS = FileSystem.getLocal(conf);
-    FSDataInputStream in = localFS.open(localJobTokenFile);
-    
-    TokenStorage ts = new TokenStorage();
-    ts.readFields(in);
+    Path localJobTokenFile = new Path ("file:///" + jobTokenFile);
+
+    Credentials ts = Credentials.readTokenStorageFile(localJobTokenFile, conf);
 
     if(LOG.isDebugEnabled()) {
-      LOG.debug("Task: Loaded jobTokenFile from: "+localJobTokenFile.toUri().getPath() 
-        +"; num of sec keys  = " + ts.numberOfSecretKeys());
+      LOG.debug("Task: Loaded jobTokenFile from: "+
+          localJobTokenFile.toUri().getPath() 
+          +"; num of sec keys  = " + ts.numberOfSecretKeys() +
+          " Number of tokens " +  ts.numberOfTokens());
     }
-    in.close();
     return ts;
   }
   /**
@@ -235,8 +196,8 @@ public class TokenCache {
    */
   @InterfaceAudience.Private
   public static void setJobToken(Token<? extends TokenIdentifier> t, 
-      TokenStorage ts) {
-    ts.addToken(JOB_TOKEN, t);
+      Credentials credentials) {
+    credentials.addToken(JOB_TOKEN, t);
   }
   /**
    * 
@@ -244,18 +205,7 @@ public class TokenCache {
    */
   @SuppressWarnings("unchecked")
   @InterfaceAudience.Private
-  public static Token<JobTokenIdentifier> getJobToken(TokenStorage ts) {
-    return (Token<JobTokenIdentifier>) ts.getToken(JOB_TOKEN);
-  }
-  
-  static String buildDTServiceName(URI uri) {
-    int port = uri.getPort();
-    if(port == -1) 
-      port = NameNode.DEFAULT_PORT;
-    
-    // build the service name string "ip:port"
-    StringBuffer sb = new StringBuffer();
-    sb.append(NetUtils.normalizeHostName(uri.getHost())).append(":").append(port);
-    return sb.toString();
+  public static Token<JobTokenIdentifier> getJobToken(Credentials credentials) {
+    return (Token<JobTokenIdentifier>) credentials.getToken(JOB_TOKEN);
   }
 }

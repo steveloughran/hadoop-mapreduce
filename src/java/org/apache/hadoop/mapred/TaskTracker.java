@@ -20,6 +20,8 @@
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileNotFoundException;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.net.InetSocketAddress;
@@ -56,7 +58,7 @@ import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.DF;
-import org.apache.hadoop.fs.FSDataInputStream;
+import org.apache.hadoop.fs.CommonConfigurationKeys;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileUtil;
@@ -64,7 +66,10 @@ import org.apache.hadoop.fs.LocalDirAllocator;
 import org.apache.hadoop.fs.LocalFileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.http.HttpServer;
+import org.apache.hadoop.io.SecureIOUtils;
 import org.apache.hadoop.io.IntWritable;
+import org.apache.hadoop.io.IOUtils;
+import org.apache.hadoop.ipc.ProtocolSignature;
 import org.apache.hadoop.ipc.RPC;
 import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.ipc.Server;
@@ -78,13 +83,15 @@ import org.apache.hadoop.mapred.TaskTrackerStatus.TaskTrackerHealthStatus;
 import org.apache.hadoop.mapred.pipes.Submitter;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.MRJobConfig;
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.filecache.TrackerDistributedCacheManager;
 import org.apache.hadoop.mapreduce.security.SecureShuffleUtils;
 import org.apache.hadoop.mapreduce.security.TokenCache;
-import org.apache.hadoop.security.TokenStorage;
+import org.apache.hadoop.security.Credentials;
 import org.apache.hadoop.mapreduce.security.token.JobTokenIdentifier;
 import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
+import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.tasktracker.TTConfig;
 import org.apache.hadoop.mapreduce.server.tasktracker.Localizer;
 import org.apache.hadoop.mapreduce.task.reduce.ShuffleHeader;
@@ -95,9 +102,9 @@ import org.apache.hadoop.metrics.MetricsUtil;
 import org.apache.hadoop.metrics.Updater;
 import org.apache.hadoop.net.DNS;
 import org.apache.hadoop.net.NetUtils;
+import org.apache.hadoop.security.SecurityUtil;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.authorize.PolicyProvider;
-import org.apache.hadoop.security.authorize.ServiceAuthorizationManager;
 import org.apache.hadoop.util.DiskChecker;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
 import org.apache.hadoop.mapreduce.util.MemoryCalculatorPlugin;
@@ -161,10 +168,12 @@ public class TaskTracker extends LifecycleService
   public static final Log ClientTraceLog =
     LogFactory.getLog(TaskTracker.class.getName() + ".clienttrace");
 
-  /**
-   * Flag used to synchronize running state across threads.
-   */
-  private volatile boolean running = false;
+  // Job ACLs file is created by TaskTracker under userlogs/$jobid directory for
+  // each job at job localization time. This will be used by TaskLogServlet for
+  // authorizing viewing of task logs of that job
+  static String jobACLsFile = "job-acls.xml";
+
+  volatile boolean running = true;
 
   private LocalDirAllocator localDirAllocator;
   String taskTrackerName;
@@ -253,9 +262,7 @@ public class TaskTracker extends LifecycleService
   private int maxReduceSlots;
   private int failures;
 
-  // MROwner's ugi
-  private UserGroupInformation mrOwner;
-  private String supergroup;
+  private ACLsManager aclsManager;
   
   // Performance-related config knob to send an out-of-band heartbeat
   // on task completion
@@ -279,13 +286,11 @@ public class TaskTracker extends LifecycleService
   private long reservedPhysicalMemoryOnTT = JobConf.DISABLED_MEMORY_LIMIT;
   private ResourceCalculatorPlugin resourceCalculatorPlugin = null;
 
-  // Manages job acls of jobs in TaskTracker
-  private TaskTrackerJobACLsManager jobACLsManager;
-
   /**
    * the minimum interval between jobtracker polls
    */
-  private volatile int heartbeatInterval = HEARTBEAT_INTERVAL_MIN;
+  private volatile int heartbeatInterval =
+    JTConfig.JT_HEARTBEAT_INTERVAL_MIN_DEFAULT;
   /**
    * Number of maptask completion events locations to poll for at one time
    */  
@@ -383,13 +388,26 @@ public class TaskTracker extends LifecycleService
   public TaskTrackerInstrumentation getTaskTrackerInstrumentation() {
     return myInstrumentation;
   }
-  
+
+  // Currently used only in tests
+  void setTaskTrackerInstrumentation(
+      TaskTrackerInstrumentation trackerInstrumentation) {
+    myInstrumentation = trackerInstrumentation;
+  }
+
   /**
    * A list of tips that should be cleaned up.
    */
   private BlockingQueue<TaskTrackerAction> tasksToCleanup = 
     new LinkedBlockingQueue<TaskTrackerAction>();
     
+  @Override
+  public ProtocolSignature getProtocolSignature(String protocol,
+      long clientVersion, int clientMethodsHash) throws IOException {
+    return ProtocolSignature.getProtocolSignature(
+        this, protocol, clientVersion, clientMethodsHash);
+  }
+
   /**
    * A daemon-thread that pulls tips off the list of things to cleanup.
    */
@@ -563,6 +581,11 @@ public class TaskTracker extends LifecycleService
     }
   }
     
+  
+  int getHttpPort() {
+    return httpPort;
+  }
+
   /**
    * Do the real constructor work here.  It's in a separate method
    * so we can call it again and "recycle" the object after calling
@@ -571,22 +594,9 @@ public class TaskTracker extends LifecycleService
   synchronized void initialize() throws IOException, InterruptedException {
     //allow this operation in only two service states: started and live
     verifyServiceState(ServiceState.STARTED, ServiceState.LIVE);
-    String keytabFilename = fConf.get(TTConfig.TT_KEYTAB_FILE);
-    UserGroupInformation.setConfiguration(fConf);
-    if (keytabFilename != null) {
-      String desiredUser = fConf.get(TTConfig.TT_USER_NAME,
-                                    System.getProperty("user.name"));
-      UserGroupInformation.loginUserFromKeytab(desiredUser, 
-                                               keytabFilename);
-      mrOwner = UserGroupInformation.getLoginUser();
-      
-    } else {
-      mrOwner = UserGroupInformation.getCurrentUser();
-    }
 
-    supergroup = fConf.get(MRConfig.MR_SUPERGROUP, "supergroup");
-    LOG.info("Starting tasktracker with owner as " + mrOwner.getShortUserName()
-             + " and supergroup as " + supergroup);
+    LOG.info("Starting tasktracker with owner as " +
+        aclsManager.getMROwner().getShortUserName());
 
     localFs = FileSystem.getLocal(fConf);
     // use configured nameserver & interface to get local hostname
@@ -624,17 +634,8 @@ public class TaskTracker extends LifecycleService
     probe_sample_size = 
       this.fConf.getInt(TT_MAX_TASK_COMPLETION_EVENTS_TO_POLL, 500);
     
-    Class<? extends TaskTrackerInstrumentation> metricsInst = getInstrumentationClass(fConf);
-    try {
-      java.lang.reflect.Constructor<? extends TaskTrackerInstrumentation> c =
-        metricsInst.getConstructor(new Class[] {TaskTracker.class} );
-      this.myInstrumentation = c.newInstance(this);
-    } catch(Exception e) {
-      //Reflection can throw lots of exceptions -- handle them all by 
-      //falling back on the default.
-      LOG.error("failed to initialize taskTracker metrics", e);
-      this.myInstrumentation = new TaskTrackerMetricsInst(this);
-    }
+    // Set up TaskTracker instrumentation
+    this.myInstrumentation = createInstrumentation(this, fConf);
     
     // bind address
     InetSocketAddress socAddr = NetUtils.createSocketAddr(
@@ -644,24 +645,25 @@ public class TaskTracker extends LifecycleService
     
     this.jvmManager = new JvmManager(this);
 
-    // Set service-level authorization security policy
-    if (this.fConf.getBoolean(
-          ServiceAuthorizationManager.SERVICE_AUTHORIZATION_CONFIG, false)) {
-      PolicyProvider policyProvider = 
-        (PolicyProvider)(ReflectionUtils.newInstance(
-            this.fConf.getClass(PolicyProvider.POLICY_PROVIDER_CONFIG, 
-                MapReducePolicyProvider.class, PolicyProvider.class), 
-            this.fConf));
-      ServiceAuthorizationManager.refresh(fConf, policyProvider);
-    }
-    
     // RPC initialization
-    int max = maxMapSlots > maxReduceSlots ? 
+    int max = maxMapSlots > maxReduceSlots ?
                        maxMapSlots : maxReduceSlots;
     //set the num handlers to max*2 since canCommit may wait for the duration
     //of a heartbeat RPC
     this.taskReportServer = RPC.getServer(this.getClass(), this, bindAddress,
         tmpPort, 2 * max, false, this.fConf, this.jobTokenSecretManager);
+
+    // Set service-level authorization security policy
+    if (this.fConf.getBoolean(
+        CommonConfigurationKeys.HADOOP_SECURITY_AUTHORIZATION, false)) {
+      PolicyProvider policyProvider = 
+        (PolicyProvider)(ReflectionUtils.newInstance(
+            this.fConf.getClass(PolicyProvider.POLICY_PROVIDER_CONFIG, 
+                MapReducePolicyProvider.class, PolicyProvider.class), 
+            this.fConf));
+      this.taskReportServer.refreshServiceAcl(fConf, policyProvider);
+    }
+
     this.taskReportServer.start();
 
     // get the assigned address
@@ -693,7 +695,8 @@ public class TaskTracker extends LifecycleService
     final int connectTimeout = fConf
             .getInt("mapred.task.tracker.connect.timeout", 60000);
     this.jobClient = (InterTrackerProtocol) 
-    mrOwner.doAs(new PrivilegedExceptionAction<Object>() {
+    UserGroupInformation.getLoginUser().doAs(
+        new PrivilegedExceptionAction<Object>() {
       public Object run() throws IOException {
         return RPC.waitForProxy(InterTrackerProtocol.class,
             InterTrackerProtocol.versionID, 
@@ -743,26 +746,15 @@ public class TaskTracker extends LifecycleService
       fConf.getBoolean(TT_OUTOFBAND_HEARBEAT, false);
   }
 
-  UserGroupInformation getMROwner() {
-    return mrOwner;
-  }
-
-  String getSuperGroup() {
-    return supergroup;
-  }
-  
   /**
-   * Is job level authorization enabled on the TT ?
+   * Are ACLs for authorization checks enabled on the MR cluster ?
    */
-  boolean isJobLevelAuthorizationEnabled() {
-    return fConf.getBoolean(
-        MRConfig.JOB_LEVEL_AUTHORIZATION_ENABLING_FLAG, false);
+  boolean areACLsEnabled() {
+    return fConf.getBoolean(MRConfig.MR_ACLS_ENABLED, false);
   }
 
-  public static Class<? extends TaskTrackerInstrumentation> getInstrumentationClass(
-    Configuration conf) {
-    return conf.getClass(TT_INSTRUMENTATION,
-        TaskTrackerMetricsInst.class, TaskTrackerInstrumentation.class);
+  public static Class<?>[] getInstrumentationClasses(Configuration conf) {
+    return conf.getClasses(TT_INSTRUMENTATION, TaskTrackerMetricsInst.class);
   }
 
   public static void setInstrumentationClass(
@@ -771,6 +763,41 @@ public class TaskTracker extends LifecycleService
         t, TaskTrackerInstrumentation.class);
   }
   
+  public static TaskTrackerInstrumentation createInstrumentation(
+      TaskTracker tt, Configuration conf) {
+    try {
+      Class<?>[] instrumentationClasses = getInstrumentationClasses(conf);
+      if (instrumentationClasses.length == 0) {
+        LOG.error("Empty string given for " + TT_INSTRUMENTATION + 
+            " property -- will use default instrumentation class instead");
+        return new TaskTrackerMetricsInst(tt);
+      } else if (instrumentationClasses.length == 1) {
+        // Just one instrumentation class given; create it directly
+        Class<?> cls = instrumentationClasses[0];
+        java.lang.reflect.Constructor<?> c =
+          cls.getConstructor(new Class[] {TaskTracker.class} );
+        return (TaskTrackerInstrumentation) c.newInstance(tt);
+      } else {
+        // Multiple instrumentation classes given; use a composite object
+        List<TaskTrackerInstrumentation> instrumentations =
+          new ArrayList<TaskTrackerInstrumentation>();
+        for (Class<?> cls: instrumentationClasses) {
+          java.lang.reflect.Constructor<?> c =
+            cls.getConstructor(new Class[] {TaskTracker.class} );
+          TaskTrackerInstrumentation inst =
+            (TaskTrackerInstrumentation) c.newInstance(tt);
+          instrumentations.add(inst);
+        }
+        return new CompositeTaskTrackerInstrumentation(tt, instrumentations);
+      }
+    } catch(Exception e) {
+      // Reflection can throw lots of exceptions -- handle them all by 
+      // falling back on the default.
+      LOG.error("Failed to initialize TaskTracker metrics", e);
+      return new TaskTrackerMetricsInst(tt);
+    }
+  }
+
   /**
    * Removes all contents of temporary storage.  Called upon
    * startup, to remove any leftovers from previous run.
@@ -976,7 +1003,7 @@ public class TaskTracker extends LifecycleService
        
         JobConf localJobConf = localizeJobFiles(t, rjob);
         // initialize job log directory
-        initializeJobLogDir(jobId);
+        initializeJobLogDir(jobId, localJobConf);
 
         // Now initialize the job via task-controller so as to set
         // ownership/permissions of jars, job-work-dir. Note that initializeJob
@@ -1036,7 +1063,7 @@ public class TaskTracker extends LifecycleService
     String localJobTokenFile = localizeJobTokenFile(t.getUser(), jobId);
     rjob.ugi = UserGroupInformation.createRemoteUser(t.getUser());
 
-    TokenStorage ts = TokenCache.loadTokens(localJobTokenFile, fConf);
+    Credentials ts = TokenCache.loadTokens(localJobTokenFile, fConf);
     Token<JobTokenIdentifier> jt = TokenCache.getJobToken(ts);
     if (jt != null) { //could be null in the case of some unit tests
       getJobTokenSecretManager().addTokenForJob(jobId.toString(), jt);
@@ -1056,7 +1083,7 @@ public class TaskTracker extends LifecycleService
     // set the location of the token file into jobConf to transfer 
     // the name to TaskRunner
     localJobConf.set(TokenCache.JOB_TOKENS_FILENAME,
-        localJobTokenFile.toString());
+        localJobTokenFile);
     
 
     // create the 'job-work' directory: job-specific shared directory for use as
@@ -1076,12 +1103,68 @@ public class TaskTracker extends LifecycleService
     return localJobConf;
   }
 
-  // create job userlog dir
-  void initializeJobLogDir(JobID jobId) {
+  // Create job userlog dir.
+  // Create job acls file in job log dir, if needed.
+  void initializeJobLogDir(JobID jobId, JobConf localJobConf)
+      throws IOException {
     // remove it from tasklog cleanup thread first,
     // it might be added there because of tasktracker reinit or restart
     taskLogCleanupThread.unmarkJobFromLogDeletion(jobId);
     localizer.initializeJobLogDir(jobId);
+
+    if (areACLsEnabled()) {
+      // Create job-acls.xml file in job userlog dir and write the needed
+      // info for authorization of users for viewing task logs of this job.
+      writeJobACLs(localJobConf, TaskLog.getJobDir(jobId));
+    }
+  }
+
+  /**
+   *  Creates job-acls.xml under the given directory logDir and writes
+   *  job-view-acl, queue-admins-acl, jobOwner name and queue name into this
+   *  file.
+   *  queue name is the queue to which the job was submitted to.
+   *  queue-admins-acl is the queue admins ACL of the queue to which this
+   *  job was submitted to.
+   * @param conf   job configuration
+   * @param logDir job userlog dir
+   * @throws IOException
+   */
+  private static void writeJobACLs(JobConf conf, File logDir)
+      throws IOException {
+    File aclFile = new File(logDir, jobACLsFile);
+    JobConf aclConf = new JobConf(false);
+
+    // set the job view acl in aclConf
+    String jobViewACL = conf.get(MRJobConfig.JOB_ACL_VIEW_JOB, " ");
+    aclConf.set(MRJobConfig.JOB_ACL_VIEW_JOB, jobViewACL);
+
+    // set the job queue name in aclConf
+    String queue = conf.getQueueName();
+    aclConf.setQueueName(queue);
+
+    // set the queue admins acl in aclConf
+    String qACLName = toFullPropertyName(queue,
+        QueueACL.ADMINISTER_JOBS.getAclName());
+    String queueAdminsACL = conf.get(qACLName, " ");
+    aclConf.set(qACLName, queueAdminsACL);
+
+    // set jobOwner as user.name in aclConf
+    String jobOwner = conf.getUser();
+    aclConf.set("user.name", jobOwner);
+
+    FileOutputStream out;
+    try {
+      out = SecureIOUtils.createForWrite(aclFile, 0600);
+    } catch (SecureIOUtils.AlreadyExistsException aee) {
+      LOG.warn("Job ACL file already exists at " + aclFile, aee);
+      return;
+    }
+    try {
+      aclConf.writeXml(out);
+    } finally {
+      out.close();
+    }
   }
 
   /**
@@ -1349,13 +1432,14 @@ public class TaskTracker extends LifecycleService
     JobConf conf = getJobConf();
     maxMapSlots = conf.getInt(TT_MAP_SLOTS, 2);
     maxReduceSlots = conf.getInt(TT_REDUCE_SLOTS, 2);
+    aclsManager = new ACLsManager(fConf, new JobACLsManager(fConf), null);
     this.jobTrackAddr = JobTracker.getAddress(conf);
     InetSocketAddress infoSocAddr = NetUtils.createSocketAddr(
         conf.get(TT_HTTP_ADDRESS, "0.0.0.0:50060"));
     String httpBindAddress = infoSocAddr.getHostName();
     int httpPort = infoSocAddr.getPort();
     this.server = new HttpServer("task", httpBindAddress, httpPort,
-        httpPort == 0, conf);
+        httpPort == 0, conf, aclsManager.getAdminsAcl());
     workerThreads = conf.getInt(TT_HTTP_THREADS, 40);
     this.shuffleServerMetrics = new ShuffleServerMetrics(conf);
     server.setThreads(1, workerThreads);
@@ -1376,8 +1460,10 @@ public class TaskTracker extends LifecycleService
     checkJettyPort(httpPort);
     // create task log cleanup thread
     setTaskLogCleanupThread(new UserLogCleaner(fConf));
-    // Initialize the jobACLSManager
-    jobACLsManager = new TaskTrackerJobACLsManager(this);
+
+    UserGroupInformation.setConfiguration(fConf);
+    SecurityUtil.login(fConf, TTConfig.TT_KEYTAB_FILE, TTConfig.TT_USER_NAME);
+
     initialize();
   }
 
@@ -2023,6 +2109,13 @@ public class TaskTracker extends LifecycleService
 
         // Remove this job 
         rjob.tasks.clear();
+        // Close all FileSystems for this job
+        try {
+          FileSystem.closeAllForUGI(rjob.getUGI());
+        } catch (IOException ie) {
+          LOG.warn("Ignoring exception " + StringUtils.stringifyException(ie) + 
+              " while closing FileSystem for " + rjob.getUGI());
+        }
       }
     }
 
@@ -2198,7 +2291,16 @@ public class TaskTracker extends LifecycleService
       reduceLauncher.addToTaskQueue(action);
     }
   }
-  
+
+  // This method is called from unit tests
+  int getFreeSlots(boolean isMap) {
+    if (isMap) {
+      return mapLauncher.numFreeSlots.get();
+    } else {
+      return reduceLauncher.numFreeSlots.get();
+    }
+  }
+
   class TaskLauncher extends Thread {
     private IntWritable numFreeSlots;
     private final int maxSlots;
@@ -2746,7 +2848,7 @@ public class TaskTracker extends LifecycleService
       runner.signalDone();
       LOG.info("Task " + task.getTaskID() + " is done.");
       LOG.info("reported output size for " + task.getTaskID() +  "  was " + taskStatus.getOutputSize());
-
+      myInstrumentation.statusUpdate(task, taskStatus);
     }
     
     public boolean wasKilled() {
@@ -2764,8 +2866,11 @@ public class TaskTracker extends LifecycleService
      */
     void reportTaskFinished(boolean commitPending) {
       if (!commitPending) {
-        taskFinished();
-        releaseSlot();
+        try {
+          taskFinished(); 
+        } finally {
+          releaseSlot();
+        }
       }
       notifyTTAboutTaskCompletion();
     }
@@ -2835,7 +2940,15 @@ public class TaskTracker extends LifecycleService
             setTaskFailState(true);
             // call the script here for the failed tasks.
             if (debugCommand != null) {
-              runDebugScript();
+              try {
+                runDebugScript();
+              } catch (Exception e) {
+                String msg =
+                    "Debug-script could not be run successfully : "
+                        + StringUtils.stringifyException(e);
+                LOG.warn(msg);
+                reportDiagnosticInfo(msg);
+              }
             }
           }
           taskStatus.setProgress(0.0f);
@@ -2856,14 +2969,17 @@ public class TaskTracker extends LifecycleService
       if (needCleanup) {
         removeTaskFromJob(task.getJobID(), this);
       }
-      try {
-        cleanup(needCleanup);
-      } catch (IOException ie) {
-      }
 
+      cleanup(needCleanup);
     }
-    
-    private void runDebugScript() {
+
+    /**
+     * Run the debug-script now. Because debug-script can be user code, we use
+     * {@link TaskController} to execute the debug script.
+     * 
+     * @throws IOException
+     */
+    private void runDebugScript() throws IOException {
       String taskStdout ="";
       String taskStderr ="";
       String taskSyslog ="";
@@ -2881,23 +2997,14 @@ public class TaskTracker extends LifecycleService
         taskSyslog = FileUtil
             .makeShellPath(TaskLog.getRealTaskLogFileLocation(task.getTaskID(),
                 task.isTaskCleanupTask(), TaskLog.LogName.SYSLOG));
-      } catch(IOException e){
-        LOG.warn("Exception finding task's stdout/err/syslog files");
+      } catch(Exception e){
+        LOG.warn("Exception finding task's stdout/err/syslog files", e);
       }
-      File workDir = null;
-      try {
-        workDir =
-            new File(lDirAlloc.getLocalPathToRead(
-                TaskTracker.getLocalTaskDir(task.getUser(), task
-                    .getJobID().toString(), task.getTaskID()
-                    .toString(), task.isTaskCleanupTask())
-                    + Path.SEPARATOR + MRConstants.WORKDIR,
-                localJobConf).toString());
-      } catch (IOException e) {
-        LOG.warn("Working Directory of the task " + task.getTaskID() +
-                        " doesnt exist. Caught exception " +
-                  StringUtils.stringifyException(e));
-      }
+      File workDir = new File(lDirAlloc.getLocalPathToRead(
+          TaskTracker.getLocalTaskDir(task.getUser(), task.getJobID()
+              .toString(), task.getTaskID().toString(), task
+              .isTaskCleanupTask())
+              + Path.SEPARATOR + MRConstants.WORKDIR, localJobConf).toString());
       // Build the command  
       File stdout = TaskLog.getTaskLogFile(task.getTaskID(), task
           .isTaskCleanupTask(), TaskLog.LogName.DEBUGOUT);
@@ -2927,21 +3034,10 @@ public class TaskTracker extends LifecycleService
       context.stdout = stdout;
       context.workDir = workDir;
       context.task = task;
-      try {
-        getTaskController().runDebugScript(context);
-        // add all lines of debug out to diagnostics
-        try {
-          int num = localJobConf.getInt(MRJobConfig.TASK_DEBUGOUT_LINES,
-              -1);
-          addDiagnostics(FileUtil.makeShellPath(stdout),num,
-              "DEBUG OUT");
-        } catch(IOException ioe) {
-          LOG.warn("Exception in add diagnostics!");
-        }
-      } catch (IOException ie) {
-        LOG.warn("runDebugScript failed with: " + StringUtils.
-                                              stringifyException(ie));
-      }
+      getTaskController().runDebugScript(context);
+      // add the lines of debug out to diagnostics
+      int num = localJobConf.getInt(MRJobConfig.TASK_DEBUGOUT_LINES, -1);
+      addDiagnostics(FileUtil.makeShellPath(stdout), num, "DEBUG OUT");
     }
 
     /**
@@ -3056,6 +3152,7 @@ public class TaskTracker extends LifecycleService
       taskStatus.setFinishTime(System.currentTimeMillis());
       removeFromMemoryManager(task.getTaskID());
       releaseSlot();
+      myInstrumentation.statusUpdate(task, taskStatus);
       notifyTTAboutTaskCompletion();
     }
     
@@ -3088,6 +3185,7 @@ public class TaskTracker extends LifecycleService
                              failure);
         runningTasks.put(task.getTaskID(), this);
         mapTotal++;
+        myInstrumentation.statusUpdate(task, taskStatus);
       } else {
         LOG.warn("Output already reported lost:"+task.getTaskID());
       }
@@ -3105,7 +3203,7 @@ public class TaskTracker extends LifecycleService
      * otherwise the current working directory of the task 
      * i.e. &lt;taskid&gt;/work is cleaned up.
      */
-    void cleanup(boolean needCleanup) throws IOException {
+    void cleanup(boolean needCleanup) {
       TaskAttemptID taskId = task.getTaskID();
       LOG.debug("Cleaning up " + taskId);
 
@@ -3203,6 +3301,21 @@ public class TaskTracker extends LifecycleService
     }
   }
 
+  /**
+   * Check that the current UGI is the JVM authorized to report
+   * for this particular job.
+   *
+   * @throws IOException for unauthorized access
+   */
+  private void ensureAuthorizedJVM(JobID jobId) throws IOException {
+    String currentJobId = 
+      UserGroupInformation.getCurrentUser().getUserName();
+    if (!currentJobId.equals(jobId.toString())) {
+      throw new IOException ("JVM with " + currentJobId + 
+          " is not authorized for " + jobId);
+    }
+  }
+
     
   // ///////////////////////////////////////////////////////////////
   // TaskUmbilicalProtocol
@@ -3213,6 +3326,7 @@ public class TaskTracker extends LifecycleService
    */
   public synchronized JvmTask getTask(JvmContext context) 
   throws IOException {
+    ensureAuthorizedJVM(context.jvmId.getJobId());
     JVMId jvmId = context.jvmId;
     
     // save pid of task JVM sent by child
@@ -3251,9 +3365,11 @@ public class TaskTracker extends LifecycleService
   public synchronized boolean statusUpdate(TaskAttemptID taskid, 
                                               TaskStatus taskStatus) 
   throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
     TaskInProgress tip = tasks.get(taskid);
     if (tip != null) {
       tip.reportProgress(taskStatus);
+      myInstrumentation.statusUpdate(tip.getTask(), taskStatus);
       return true;
     } else {
       LOG.warn("Progress from unknown child task: "+taskid);
@@ -3266,6 +3382,16 @@ public class TaskTracker extends LifecycleService
    * diagnostic info
    */
   public synchronized void reportDiagnosticInfo(TaskAttemptID taskid, String info) throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
+    internalReportDiagnosticInfo(taskid, info);
+  }
+
+  /**
+   * Same as reportDiagnosticInfo but does not authorize caller. This is used
+   * internally within MapReduce, whereas reportDiagonsticInfo may be called
+   * via RPC.
+   */
+  synchronized void internalReportDiagnosticInfo(TaskAttemptID taskid, String info) throws IOException {
     TaskInProgress tip = tasks.get(taskid);
     if (tip != null) {
       tip.reportDiagnosticInfo(info);
@@ -3276,6 +3402,7 @@ public class TaskTracker extends LifecycleService
   
   public synchronized void reportNextRecordRange(TaskAttemptID taskid, 
       SortedRanges.Range range) throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
     TaskInProgress tip = tasks.get(taskid);
     if (tip != null) {
       tip.reportNextRecordRange(range);
@@ -3287,6 +3414,7 @@ public class TaskTracker extends LifecycleService
 
   /** Child checking to see if we're alive.  Normally does nothing.*/
   public synchronized boolean ping(TaskAttemptID taskid) throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
     return tasks.get(taskid) != null;
   }
 
@@ -3297,6 +3425,7 @@ public class TaskTracker extends LifecycleService
   public synchronized void commitPending(TaskAttemptID taskid,
                                          TaskStatus taskStatus) 
   throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
     LOG.info("Task " + taskid + " is in commit-pending," +"" +
              " task state:" +taskStatus.getRunState());
     statusUpdate(taskid, taskStatus);
@@ -3315,6 +3444,7 @@ public class TaskTracker extends LifecycleService
    */
   public synchronized void done(TaskAttemptID taskid) 
   throws IOException {
+    ensureAuthorizedJVM(taskid.getJobID());
     TaskInProgress tip = tasks.get(taskid);
     commitResponses.remove(taskid);
     if (tip != null) {
@@ -3330,6 +3460,7 @@ public class TaskTracker extends LifecycleService
    */  
   public synchronized void shuffleError(TaskAttemptID taskId, String message) 
   throws IOException { 
+    ensureAuthorizedJVM(taskId.getJobID());
     LOG.fatal("Task: " + taskId + " - Killed due to Shuffle Failure: " + message);
     TaskInProgress tip = runningTasks.get(taskId);
     tip.reportDiagnosticInfo("Shuffle Error: " + message);
@@ -3340,6 +3471,16 @@ public class TaskTracker extends LifecycleService
    * A child task had a local filesystem error. Kill the task.
    */  
   public synchronized void fsError(TaskAttemptID taskId, String message) 
+  throws IOException {
+    ensureAuthorizedJVM(taskId.getJobID());
+    internalFsError(taskId, message);
+  }
+
+  /**
+   * Version of fsError() that does not do authorization checks, called by
+   * the TaskRunner.
+   */
+  synchronized void internalFsError(TaskAttemptID taskId, String message)
   throws IOException {
     LOG.fatal("Task: " + taskId + " - Killed due to FSError: " + message);
     TaskInProgress tip = runningTasks.get(taskId);
@@ -3352,6 +3493,7 @@ public class TaskTracker extends LifecycleService
    */  
   public synchronized void fatalError(TaskAttemptID taskId, String msg) 
   throws IOException {
+    ensureAuthorizedJVM(taskId.getJobID());
     LOG.fatal("Task: " + taskId + " - exited : " + msg);
     TaskInProgress tip = runningTasks.get(taskId);
     tip.reportDiagnosticInfo("Error: " + msg);
@@ -3640,6 +3782,8 @@ public class TaskTracker extends LifecycleService
       int numMaps = 0;
       try {
         shuffleMetrics.serverHandlerBusy();
+        response.setContentType("application/octet-stream");
+
         outStream = new DataOutputStream(response.getOutputStream());
         //use the same buffersize as used for reading the data from disk
         response.setBufferSize(MAX_BYTES_TO_READ);
@@ -3698,17 +3842,19 @@ public class TaskTracker extends LifecycleService
       
       // true iff IOException was caused by attempt to access input
       boolean isInputException = false;
-      FSDataInputStream mapOutputIn = null;
+      FileInputStream mapOutputIn = null;
       byte[] buffer = new byte[MAX_BYTES_TO_READ];
       long totalRead = 0;
 
       String userName = null;
+      String runAsUserName = null;
       synchronized (tracker.runningJobs) {
         RunningJob rjob = tracker.runningJobs.get(JobID.forName(jobId));
         if (rjob == null) {
           throw new IOException("Unknown job " + jobId + "!!");
         }
         userName = rjob.jobConf.getUser();
+        runAsUserName = tracker.getTaskController().getRunAsUser(rjob.jobConf);
       }
       // Index file
       Path indexFileName =
@@ -3727,17 +3873,19 @@ public class TaskTracker extends LifecycleService
        * for the given reducer is available.
        */
       IndexRecord info = 
-        tracker.indexCache.getIndexInformation(mapId, reduce, indexFileName);
-      
+        tracker.indexCache.getIndexInformation(mapId, reduce, indexFileName,
+            runAsUserName);
+
       try {
         /**
          * Read the data from the single map-output file and
          * send it to the reducer.
          */
         //open the map-output file
-        mapOutputIn = localfs.open(mapOutputFileName);
+        mapOutputIn = SecureIOUtils.openForRead(
+            new File(mapOutputFileName.toUri().getPath()), runAsUserName, null);
         //seek to the correct offset for the reduce
-        mapOutputIn.seek(info.startOffset);
+        IOUtils.skipFully(mapOutputIn, info.startOffset);
         
         // write header for each map output
         ShuffleHeader header = new ShuffleHeader(mapId, info.partLength,
@@ -4144,8 +4292,12 @@ public class TaskTracker extends LifecycleService
       return localJobTokenFileStr;
     }
 
-    TaskTrackerJobACLsManager getJobACLsManager() {
-      return jobACLsManager;
+    JobACLsManager getJobACLsManager() {
+      return aclsManager.getJobACLsManager();
+    }
+    
+    ACLsManager getACLsManager() {
+      return aclsManager;
     }
 
     /**
