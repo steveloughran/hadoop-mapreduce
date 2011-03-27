@@ -38,6 +38,7 @@ import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.Reducer;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskInputOutputContext;
+import org.apache.hadoop.security.Credentials;
 
 /**
  * A simple wrapper class that delegates most of its functionality to the
@@ -197,6 +198,11 @@ class ChainMapContextImpl<KEYIN, VALUEIN, KEYOUT, VALUEOUT> implements
   }
 
   @Override
+  public boolean getTaskCleanupNeeded() {
+    return base.getTaskCleanupNeeded();
+  }
+
+  @Override
   public Path[] getLocalCacheArchives() throws IOException {
     return base.getLocalCacheArchives();
   }
@@ -303,6 +309,11 @@ class ChainMapContextImpl<KEYIN, VALUEIN, KEYOUT, VALUEOUT> implements
   @Override
   public void progress() {
     base.progress();
+  }
+
+  @Override
+  public Credentials getCredentials() {
+    return base.getCredentials();
   }
 
 }

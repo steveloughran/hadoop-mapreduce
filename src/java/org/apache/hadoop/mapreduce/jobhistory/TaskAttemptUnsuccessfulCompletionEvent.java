@@ -20,6 +20,9 @@ package org.apache.hadoop.mapreduce.jobhistory;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.mapred.TaskStatus;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.TaskType;
@@ -30,6 +33,8 @@ import org.apache.avro.util.Utf8;
  * Event to record unsuccessful (Killed/Failed) completion of task attempts
  *
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class TaskAttemptUnsuccessfulCompletionEvent implements HistoryEvent {
   private TaskAttemptUnsuccessfulCompletion datum =
     new TaskAttemptUnsuccessfulCompletion();
@@ -83,7 +88,17 @@ public class TaskAttemptUnsuccessfulCompletionEvent implements HistoryEvent {
   public String getTaskStatus() { return datum.status.toString(); }
   /** Get the event type */
   public EventType getEventType() {
-    return EventType.MAP_ATTEMPT_KILLED;
+    // Note that the task type can be setup/map/reduce/cleanup but the 
+    // attempt-type can only be map/reduce.
+    // find out if the task failed or got killed
+    boolean failed = TaskStatus.State.FAILED.toString().equals(getTaskStatus());
+    return getTaskId().getTaskType() == TaskType.MAP 
+           ? (failed 
+              ? EventType.MAP_ATTEMPT_FAILED
+              : EventType.MAP_ATTEMPT_KILLED)
+           : (failed
+              ? EventType.REDUCE_ATTEMPT_FAILED
+              : EventType.REDUCE_ATTEMPT_KILLED);
   }
 
 }

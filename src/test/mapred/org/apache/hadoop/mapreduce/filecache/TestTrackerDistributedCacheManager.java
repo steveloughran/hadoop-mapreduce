@@ -24,7 +24,9 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.security.PrivilegedExceptionAction;
 import java.util.Random;
+import java.util.concurrent.TimeUnit;
 
 import javax.security.auth.login.LoginException;
 
@@ -36,8 +38,8 @@ import org.apache.hadoop.mapred.TaskController;
 import org.apache.hadoop.mapred.TaskTracker;
 import org.apache.hadoop.mapreduce.Cluster;
 import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.MRConfig;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
@@ -66,6 +68,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
 
   private static final int TEST_FILE_SIZE = 4 * 1024; // 4K
   private static final int LOCAL_CACHE_LIMIT = 5 * 1024; //5K
+  private static final int LOCAL_CACHE_SUBDIR = 2;
   protected Configuration conf;
   protected Path firstCacheFile;
   protected Path secondCacheFile;
@@ -84,6 +87,19 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       TEST_ROOT.mkdirs();
     }
 
+    conf = new Configuration();
+    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "file:///");
+    fs = FileSystem.get(conf);
+
+    // This test suite will fail if any ancestor directory of the
+    // test directory is not world-searchable (ie +x).
+    // We prefer to fail the test in an obvious manner up front
+    // during setUp() rather than in a subtle way later.
+    assertTrue("Test root directory " + TEST_ROOT + " and all of its " +
+               "parent directories must have a+x permissions",
+               TrackerDistributedCacheManager.ancestorsHaveExecutePermissions(
+                 fs, new Path(TEST_ROOT.toString())));
+
     // Prepare the tests' mapred-local-dir
     ROOT_MAPRED_LOCAL_DIR = new File(TEST_ROOT_DIR, "mapred/local");
     ROOT_MAPRED_LOCAL_DIR.mkdirs();
@@ -95,10 +111,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       localDir.mkdir();
     }
 
-    conf = new Configuration();
     conf.setStrings(MRConfig.LOCAL_DIR, localDirs);
-    conf.set(FileSystem.FS_DEFAULT_NAME_KEY, "file:///");
-    fs = FileSystem.get(conf);
     Class<? extends TaskController> taskControllerClass = conf.getClass(
         TTConfig.TT_TASK_CONTROLLER, DefaultTaskController.class,
         TaskController.class);
@@ -144,7 +157,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     // Configures a task/job with both a regular file and a "classpath" file.
     Configuration subConf = new Configuration(conf);
     String userName = getJobOwnerName();
-    subConf.set(JobContext.USER_NAME, userName);
+    subConf.set(MRJobConfig.USER_NAME, userName);
     DistributedCache.addCacheFile(firstCacheFile.toUri(), subConf);
     DistributedCache.addFileToClassPath(secondCacheFile, subConf);
     TrackerDistributedCacheManager.determineTimestamps(subConf);
@@ -200,13 +213,13 @@ public class TestTrackerDistributedCacheManager extends TestCase {
 
     @Override
     Path localizeCache(Configuration conf, URI cache, long confFileStamp,
-        CacheStatus cacheStatus, FileStatus fileStatus, boolean isArchive,
-        boolean isPublic) throws IOException {
+        CacheStatus cacheStatus, boolean isArchive, boolean isPublic)
+    throws IOException {
       if (cache.equals(firstCacheFile.toUri())) {
         throw new IOException("fake fail");
       }
       return super.localizeCache(conf, cache, confFileStamp, cacheStatus,
-          fileStatus, isArchive, isPublic);
+          isArchive, isPublic);
     }
   }
 
@@ -237,7 +250,8 @@ public class TestTrackerDistributedCacheManager extends TestCase {
           TaskTracker.getPublicDistributedCacheDir());
     handle.release();
     for (TaskDistributedCacheManager.CacheFile c : handle.getCacheFiles()) {
-      assertEquals(0, manager.getReferenceCount(c.uri, conf1, c.timestamp));
+      assertEquals(0, manager.getReferenceCount(c.uri, conf1, c.timestamp,
+          c.owner));
     }
     
     Path thirdCacheFile = new Path(TEST_ROOT_DIR, "thirdcachefile");
@@ -274,7 +288,8 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     th = null;
     for (TaskDistributedCacheManager.CacheFile c : handle.getCacheFiles()) {
       try {
-        assertEquals(0, manager.getReferenceCount(c.uri, conf2, c.timestamp));
+        assertEquals(0, manager.getReferenceCount(c.uri, conf2, c.timestamp,
+            c.owner));
       } catch (IOException ie) {
         th = ie;
         Log.info("Exception getting reference count for " + c.uri, ie);
@@ -296,11 +311,54 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     if (!canRun()) {
       return;
     }
-    checkLocalizedPath("true");
-    checkLocalizedPath("false");
+    checkLocalizedPath(true);
+    checkLocalizedPath(false);
   }
   
-  private void checkLocalizedPath(String visibility) 
+  public void testPrivateCacheForMultipleUsers() 
+  throws IOException, LoginException, InterruptedException{
+    if (!canRun()) {
+      return;
+    }
+    // Try to initialize the distributed cache for the same file on the
+    // HDFS, for two different users.
+    // First initialize as the user running the test, then as some other user.
+    // Although the same cache file is used in both, the localization
+    // should happen twice.
+    
+    UserGroupInformation ugi = UserGroupInformation.getLoginUser();
+    Path p = ugi.doAs(new PrivilegedExceptionAction<Path>() {
+      public Path run() 
+      throws IOException, LoginException, InterruptedException {
+        return checkLocalizedPath(false);
+      }
+    });
+    String distCacheDir = TaskTracker.getPrivateDistributedCacheDir(
+        ugi.getShortUserName());
+    assertTrue("Cache file didn't get localized in the expected directory. " +
+        "Expected localization to happen within " + 
+        ROOT_MAPRED_LOCAL_DIR + "/" + distCacheDir +
+        ", but was localized at " + 
+        p, p.toString().contains(distCacheDir));
+    
+    ugi = UserGroupInformation.createRemoteUser("fooUserInMachine");
+    p = ugi.doAs(new PrivilegedExceptionAction<Path>() {
+      public Path run() 
+      throws IOException, LoginException, InterruptedException {
+        return checkLocalizedPath(false);
+      }
+    });
+    distCacheDir = TaskTracker.getPrivateDistributedCacheDir(
+        ugi.getShortUserName());
+    assertTrue("Cache file didn't get localized in the expected directory. " +
+        "Expected localization to happen within " + 
+        ROOT_MAPRED_LOCAL_DIR + "/" + distCacheDir +
+        ", but was localized at " + 
+        p, p.toString().contains(distCacheDir));
+    
+  }
+  
+  private Path checkLocalizedPath(boolean visibility) 
   throws IOException, LoginException, InterruptedException {
     TrackerDistributedCacheManager manager = 
       new TrackerDistributedCacheManager(conf, taskController);
@@ -308,7 +366,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     String userName = getJobOwnerName();
     File workDir = new File(TEST_ROOT_DIR, "workdir");
     Path cacheFile = new Path(TEST_ROOT_DIR, "fourthcachefile");
-    if ("true".equals(visibility)) {
+    if (visibility) {
       createPublicTempFile(cacheFile);
     } else {
       createPrivateTempFile(cacheFile);
@@ -329,7 +387,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
           TaskTracker.getPublicDistributedCacheDir());
     TaskDistributedCacheManager.CacheFile c = handle.getCacheFiles().get(0);
     String distCacheDir;
-    if ("true".equals(visibility)) {
+    if (visibility) {
       distCacheDir = TaskTracker.getPublicDistributedCacheDir(); 
     } else {
       distCacheDir = TaskTracker.getPrivateDistributedCacheDir(userName);
@@ -338,17 +396,18 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       manager.getLocalCache(cacheFile.toUri(), conf1, distCacheDir,
           fs.getFileStatus(cacheFile), false,
           c.timestamp, new Path(TEST_ROOT_DIR), false,
-          Boolean.parseBoolean(visibility));
+          visibility);
     assertTrue("Cache file didn't get localized in the expected directory. " +
         "Expected localization to happen within " + 
         ROOT_MAPRED_LOCAL_DIR + "/" + distCacheDir +
         ", but was localized at " + 
         localizedPath, localizedPath.toString().contains(distCacheDir));
-    if ("true".equals(visibility)) {
+    if (visibility) {
       checkPublicFilePermissions(new Path[]{localizedPath});
     } else {
       checkFilePermissions(new Path[]{localizedPath});
     }
+    return localizedPath;
   }
   
   /**
@@ -374,20 +433,62 @@ public class TestTrackerDistributedCacheManager extends TestCase {
    */
   private void checkPublicFilePermissions(Path[] localCacheFiles)
       throws IOException {
+    checkPublicFilePermissions(fs, localCacheFiles);
+  }
+
+  /**
+   * Verify the permissions for a file localized as a public distributed
+   * cache file
+   * @param fs The Local FileSystem used to get the permissions
+   * @param localCacheFiles The list of files whose permissions should be 
+   * verified.
+   * @throws IOException
+   */
+  public static void checkPublicFilePermissions(FileSystem fs, 
+      Path[] localCacheFiles) throws IOException {
     // All the files should have read and executable permissions for others
     for (Path p : localCacheFiles) {
       FsPermission perm = fs.getFileStatus(p).getPermission();
-      assertTrue("cache file is not readable by others", perm.getOtherAction()
-          .implies(FsAction.READ));
-      assertTrue("cache file is not executable by others", perm
-          .getOtherAction().implies(FsAction.EXECUTE));
+      assertTrue("cache file is not readable / executable by owner: perm="
+          + perm.getUserAction(), perm.getUserAction()
+          .implies(FsAction.READ_EXECUTE));
+      assertTrue("cache file is not readable / executable by group: perm="
+          + perm.getGroupAction(), perm.getGroupAction()
+          .implies(FsAction.READ_EXECUTE));
+      assertTrue("cache file is not readable / executable by others: perm="
+          + perm.getOtherAction(), perm.getOtherAction()
+          .implies(FsAction.READ_EXECUTE));
     }
   }
-
-  protected String getJobOwnerName() throws LoginException {
-    UserGroupInformation ugi = UserGroupInformation.login(conf);
-    return ugi.getUserName();
+  
+  /**
+   * Verify the ownership for files localized as a public distributed cache
+   * file.
+   * @param fs The Local FileSystem used to get the ownership
+   * @param localCacheFiles THe list of files whose ownership should be
+   * verified
+   * @param owner The owner of the files
+   * @param group The group owner of the files.
+   * @throws IOException
+   */
+  public static void checkPublicFileOwnership(FileSystem fs,
+      Path[] localCacheFiles, String owner, String group)
+      throws IOException {
+    for (Path p: localCacheFiles) {
+      assertEquals(owner, fs.getFileStatus(p).getOwner());
+      assertEquals(group, fs.getFileStatus(p).getGroup());
+    }
   }
+  
+  protected String getJobOwnerName() throws IOException {
+    return UserGroupInformation.getCurrentUser().getUserName();
+  }
+  
+  private long getFileStamp(Path file) throws IOException {
+    FileStatus fileStatus = fs.getFileStatus(file);
+    return fileStatus.getModificationTime();
+  }
+  
 
   /** test delete cache */
   public void testDeleteCache() throws Exception {
@@ -403,19 +504,24 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     Configuration conf2 = new Configuration(conf);
     conf2.set(MRConfig.LOCAL_DIR, ROOT_MAPRED_LOCAL_DIR.toString());
     conf2.setLong(TTConfig.TT_LOCAL_CACHE_SIZE, LOCAL_CACHE_LIMIT);
+    conf2.setLong(TTConfig.TT_LOCAL_CACHE_SUBDIRS_LIMIT, LOCAL_CACHE_SUBDIR);
+    conf2.setLong(TTConfig.TT_DISTRIBUTED_CACHE_CHECK_PERIOD, 200); // 200 ms
     refreshConf(conf2);
     TrackerDistributedCacheManager manager = 
         new TrackerDistributedCacheManager(conf2, taskController);
+    manager.startCleanupThread();
     FileSystem localfs = FileSystem.getLocal(conf2);
-    long now = System.currentTimeMillis();
     String userName = getJobOwnerName();
-    conf2.set(JobContext.USER_NAME, userName);
+    conf2.set(MRJobConfig.USER_NAME, userName);
 
+    // We first test the size limit
     Path localCache = manager.getLocalCache(firstCacheFile.toUri(), conf2, 
         TaskTracker.getPrivateDistributedCacheDir(userName),
         fs.getFileStatus(firstCacheFile), false,
-        now, new Path(TEST_ROOT_DIR), false, false);
-    manager.releaseCache(firstCacheFile.toUri(), conf2, now);
+        getFileStamp(firstCacheFile), new Path(TEST_ROOT_DIR), false, false);
+    manager.releaseCache(firstCacheFile.toUri(), conf2,
+        getFileStamp(firstCacheFile), 
+        TrackerDistributedCacheManager.getLocalizedCacheOwner(false));
     //in above code,localized a file of size 4K and then release the cache 
     // which will cause the cache be deleted when the limit goes out. 
     // The below code localize another cache which's designed to
@@ -423,10 +529,57 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     manager.getLocalCache(secondCacheFile.toUri(), conf2, 
         TaskTracker.getPrivateDistributedCacheDir(userName),
         fs.getFileStatus(secondCacheFile), false, 
-        System.currentTimeMillis(), new Path(TEST_ROOT_DIR), false, false);
-    assertFalse("DistributedCache failed deleting old" + 
-        " cache when the cache store is full.",
-        localfs.exists(localCache));
+        getFileStamp(secondCacheFile), new Path(TEST_ROOT_DIR), false, false);
+    checkCacheDeletion(localfs, localCache, "DistributedCache failed " +
+        "deleting old cache when the cache store is full.");
+    // Now we test the number of sub directories limit
+    // Create the temporary cache files to be used in the tests.
+    Path thirdCacheFile = new Path(TEST_ROOT_DIR, "thirdcachefile");
+    Path fourthCacheFile = new Path(TEST_ROOT_DIR, "fourthcachefile");
+    // Adding two more small files, so it triggers the number of sub directory
+    // limit but does not trigger the file size limit.
+    createTempFile(thirdCacheFile, 1);
+    createTempFile(fourthCacheFile, 1);
+    Path thirdLocalCache = manager.getLocalCache(thirdCacheFile.toUri(), conf2,
+        TaskTracker.getPrivateDistributedCacheDir(userName),
+        fs.getFileStatus(thirdCacheFile), false,
+        getFileStamp(thirdCacheFile), new Path(TEST_ROOT_DIR), false, false);
+    // Release the third cache so that it can be deleted while sweeping
+    manager.releaseCache(thirdCacheFile.toUri(), conf2,
+        getFileStamp(thirdCacheFile), 
+        TrackerDistributedCacheManager.getLocalizedCacheOwner(false));
+    // Getting the fourth cache will make the number of sub directories becomes
+    // 3 which is greater than 2. So the released cache will be deleted.
+    manager.getLocalCache(fourthCacheFile.toUri(), conf2, 
+        TaskTracker.getPrivateDistributedCacheDir(userName),
+        fs.getFileStatus(fourthCacheFile), false, 
+        getFileStamp(fourthCacheFile), new Path(TEST_ROOT_DIR), false, false);
+    checkCacheDeletion(localfs, thirdLocalCache,
+        "DistributedCache failed deleting old" +
+        " cache when the cache exceeds the number of sub directories limit.");
+    // Clean up the files created in this test
+    new File(thirdCacheFile.toString()).delete();
+    new File(fourthCacheFile.toString()).delete();
+    manager.stopCleanupThread();
+  }
+
+  /**
+   * Periodically checks if a file is there, return if the file is no longer
+   * there. Fails the test if a files is there for 30 seconds.
+   */
+  private void checkCacheDeletion(FileSystem fs, Path cache, String msg)
+    throws Exception {
+    // Check every 100ms to see if the cache is deleted
+    boolean cacheExists = true;
+    for (int i = 0; i < 300; i++) {
+      if (!fs.exists(cache)) {
+        cacheExists = false;
+        break;
+      }
+      TimeUnit.MILLISECONDS.sleep(100L);
+    }
+    // If the cache is still there after 5 minutes, test fails.
+    assertFalse(msg, cacheExists);
   }
   
   public void testFileSystemOtherThanDefault() throws Exception {
@@ -437,26 +590,30 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       new TrackerDistributedCacheManager(conf, taskController);
     conf.set("fs.fakefile.impl", conf.get("fs.file.impl"));
     String userName = getJobOwnerName();
-    conf.set(JobContext.USER_NAME, userName);
+    conf.set(MRJobConfig.USER_NAME, userName);
     Path fileToCache = new Path("fakefile:///"
         + firstCacheFile.toUri().getPath());
     Path result = manager.getLocalCache(fileToCache.toUri(), conf,
         TaskTracker.getPrivateDistributedCacheDir(userName),
         fs.getFileStatus(firstCacheFile), false,
-        System.currentTimeMillis(),
+        getFileStamp(firstCacheFile),
         new Path(TEST_ROOT_DIR), false, false);
     assertNotNull("DistributedCache cached file on non-default filesystem.",
         result);
   }
 
   static void createTempFile(Path p) throws IOException {
+    createTempFile(p, TEST_FILE_SIZE);
+  }
+  
+  static void createTempFile(Path p, int size) throws IOException {
     File f = new File(p.toString());
     FileOutputStream os = new FileOutputStream(f);
-    byte[] toWrite = new byte[TEST_FILE_SIZE];
+    byte[] toWrite = new byte[size];
     new Random().nextBytes(toWrite);
     os.write(toWrite);
     os.close();
-    FileSystem.LOG.info("created: " + p + ", size=" + TEST_FILE_SIZE);
+    FileSystem.LOG.info("created: " + p + ", size=" + size);
   }
   
   static void createPublicTempFile(Path p) 
@@ -519,7 +676,7 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     // ****** Imitate JobClient code
     // Configures a task/job with both a regular file and a "classpath" file.
     Configuration subConf = new Configuration(myConf);
-    subConf.set(JobContext.USER_NAME, userName);
+    subConf.set(MRJobConfig.USER_NAME, userName);
     DistributedCache.addCacheFile(firstCacheFile.toUri(), subConf);
     TrackerDistributedCacheManager.determineTimestamps(subConf);
     TrackerDistributedCacheManager.determineCacheVisibilities(subConf);
@@ -563,9 +720,30 @@ public class TestTrackerDistributedCacheManager extends TestCase {
     // release
     handle.release();
     
+    // running a task of the same job on another TaskTracker which has never
+    // initialized the cache
+    TrackerDistributedCacheManager manager2 = 
+      new TrackerDistributedCacheManager(myConf, taskController);
+    TaskDistributedCacheManager handle2 =
+      manager2.newTaskDistributedCacheManager(subConf);
+    File workDir2 = new File(new Path(TEST_ROOT_DIR, "workdir2").toString());
+    th = null;
+    try {
+      handle2.setup(localDirAllocator, workDir2, TaskTracker
+          .getPrivateDistributedCacheDir(userName), 
+          TaskTracker.getPublicDistributedCacheDir());
+    } catch (IOException ie) {
+      th = ie;
+    }
+    assertNotNull("Throwable is null", th);
+    assertTrue("Exception message does not match",
+        th.getMessage().contains("has changed on HDFS since job started"));
+    // release
+    handle.release();
+    
     // submit another job
     Configuration subConf2 = new Configuration(myConf);
-    subConf2.set(JobContext.USER_NAME, userName);
+    subConf2.set(MRJobConfig.USER_NAME, userName);
     DistributedCache.addCacheFile(firstCacheFile.toUri(), subConf2);
     TrackerDistributedCacheManager.determineTimestamps(subConf2);
     TrackerDistributedCacheManager.determineCacheVisibilities(subConf2);
@@ -601,17 +779,16 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       return;
     }
     String userName = getJobOwnerName();
-    conf.set(JobContext.USER_NAME, userName);
+    conf.set(MRJobConfig.USER_NAME, userName);
     TrackerDistributedCacheManager manager = 
         new TrackerDistributedCacheManager(conf, taskController);
     FileSystem localfs = FileSystem.getLocal(conf);
-    long now = System.currentTimeMillis();
 
     Path[] localCache = new Path[2];
     localCache[0] = manager.getLocalCache(firstCacheFile.toUri(), conf, 
         TaskTracker.getPrivateDistributedCacheDir(userName),
         fs.getFileStatus(firstCacheFile), false,
-        now, new Path(TEST_ROOT_DIR), false, false);
+        getFileStamp(firstCacheFile), new Path(TEST_ROOT_DIR), false, false);
     FsPermission myPermission = new FsPermission((short)0600);
     Path myFile = new Path(localCache[0].getParent(), "myfile.txt");
     if (FileSystem.create(localfs, myFile, myPermission) == null) {
@@ -621,7 +798,8 @@ public class TestTrackerDistributedCacheManager extends TestCase {
       localCache[1] = manager.getLocalCache(secondCacheFile.toUri(), conf, 
           TaskTracker.getPrivateDistributedCacheDir(userName),
           fs.getFileStatus(secondCacheFile), false, 
-          System.currentTimeMillis(), new Path(TEST_ROOT_DIR), false, false);
+          getFileStamp(secondCacheFile), new Path(TEST_ROOT_DIR), false,
+          false);
       FileStatus stat = localfs.getFileStatus(myFile);
       assertTrue(stat.getPermission().equals(myPermission));
       // validate permissions of localized files.

@@ -42,6 +42,7 @@ import org.apache.hadoop.io.WritableComparable;
 import org.apache.hadoop.io.WritableUtils;
 import org.apache.hadoop.mapred.MRCaching.TestResult;
 import org.apache.hadoop.mapreduce.Job;
+import org.apache.hadoop.mapreduce.MapReduceTestUtil;
 import org.apache.hadoop.mapreduce.TaskCounter;
 import org.apache.hadoop.mapreduce.TestMapReduceLocal;
 import org.apache.hadoop.mapreduce.lib.input.FileInputFormat;
@@ -125,7 +126,7 @@ public class TestMiniMRLocalFS extends TestCase {
     try {
       JobClient.runJob(job);
       String result = 
-        TestMiniMRWithDFS.readOutput(outDir, job);
+        MapReduceTestUtil.readOutput(outDir, job);
       assertEquals("output", ("aunt annie\t1\n" +
                               "bumble boat\t4\n" +
                               "crocodile pants\t0\n" +
@@ -311,7 +312,7 @@ public class TestMiniMRLocalFS extends TestCase {
     TestMapReduceLocal.writeFile
              ("in/part1", "-1 -4\n-3 23\n5 10\n-1 -2\n-1 300\n-1 10\n4 1\n" +
               "4 2\n4 10\n4 -1\n4 -10\n10 20\n10 30\n10 25\n");
-    Job job = new Job(conf, "word count");
+    Job job = Job.getInstance(conf, "word count");
     job.setJarByClass(WordCount.class);
     job.setNumReduceTasks(2);
     job.setMapperClass(SecondarySort.MapClass.class);

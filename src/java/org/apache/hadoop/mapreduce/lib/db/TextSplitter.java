@@ -28,12 +28,17 @@ import java.util.List;
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapreduce.InputSplit;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 /**
  * Implement DBSplitter over text strings.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public class TextSplitter extends BigDecimalSplitter {
 
   private static final Log LOG = LogFactory.getLog(TextSplitter.class);
@@ -61,7 +66,7 @@ public class TextSplitter extends BigDecimalSplitter {
     LOG.warn("Generating splits for a textual index column.");
     LOG.warn("If your database sorts in a case-insensitive order, "
         + "this may result in a partial import or duplicate records.");
-    LOG.warn("You are strongly encouraged to choose a numeric split column.");
+    LOG.warn("You are strongly encouraged to choose an integral split column.");
 
     String minString = results.getString(1);
     String maxString = results.getString(2);
@@ -86,7 +91,7 @@ public class TextSplitter extends BigDecimalSplitter {
 
     // Use this as a hint. May need an extra task if the size doesn't
     // divide cleanly.
-    int numSplits = conf.getInt("mapred.map.tasks", 1);
+    int numSplits = conf.getInt(MRJobConfig.NUM_MAPS, 1);
 
     String lowClausePrefix = colName + " >= '";
     String highClausePrefix = colName + " < '";

@@ -171,13 +171,39 @@ void test_get_task_launcher_file() {
   assert(ret == 0);
 }
 
+void test_get_job_log_dir() {
+  char *logdir = (char *) get_job_log_dir("/tmp/testing",
+    "job_200906101234_0001");
+  printf("logdir obtained is %s\n", logdir);
+  int ret = 0;
+  if (strcmp(logdir, "/tmp/testing/userlogs/job_200906101234_0001") != 0) {
+    ret = -1;
+  }
+  free(logdir);
+  assert(ret == 0);
+}
+
+void test_get_job_acls_file() {
+  char *job_acls_file = (char *) get_job_acls_file(
+    "/tmp/testing/userlogs/job_200906101234_0001");
+  printf("job acls file obtained is %s\n", job_acls_file);
+  int ret = 0;
+  if (strcmp(job_acls_file,
+    "/tmp/testing/userlogs/job_200906101234_0001/job-acls.xml") != 0) {
+    ret = -1;
+  }
+  free(job_acls_file);
+  assert(ret == 0);
+}
+
 void test_get_task_log_dir() {
   char *logdir = (char *) get_task_log_dir("/tmp/testing",
-      "attempt_200906112028_0001_m_000000_0");
+    "job_200906101234_0001", "attempt_200906112028_0001_m_000000_0");
   printf("logdir obtained is %s\n", logdir);
   int ret = 0;
   if (strcmp(logdir,
-      "/tmp/testing/userlogs/attempt_200906112028_0001_m_000000_0") != 0) {
+      "/tmp/testing/userlogs/job_200906101234_0001/attempt_200906112028_0001_m_000000_0")
+      != 0) {
     ret = -1;
   }
   free(logdir);
@@ -202,6 +228,12 @@ int main(int argc, char **argv) {
 
   printf("\nTesting get_task_launcher_file()\n");
   test_get_task_launcher_file();
+
+  printf("\nTesting get_job_log_dir()\n");
+  test_get_job_log_dir();
+
+  printf("\nTesting get_job_acls_file()\n");
+  test_get_job_acls_file();
 
   printf("\nTesting get_task_log_dir()\n");
   test_get_task_log_dir();

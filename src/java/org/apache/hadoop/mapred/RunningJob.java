@@ -20,6 +20,10 @@ package org.apache.hadoop.mapred;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+import org.apache.hadoop.conf.Configuration;
+
 
 /** 
  * <code>RunningJob</code> is the user-interface to query for details on a 
@@ -33,7 +37,17 @@ import java.io.IOException;
  * @deprecated Use {@link org.apache.hadoop.mapreduce.Job} instead
  */
 @Deprecated
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public interface RunningJob {
+
+  /**
+   * Get the underlying job configuration
+   *
+   * @return the configuration of the job.
+   */
+  public Configuration getConfiguration();
+
   /**
    * Get the job identifier.
    * 

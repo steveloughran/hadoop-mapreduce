@@ -21,13 +21,18 @@ package org.apache.hadoop.mapred;
 import java.io.IOException;
 import java.text.NumberFormat;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.compress.CompressionCodec;
+import org.apache.hadoop.mapred.FileAlreadyExistsException;
+import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.util.Progressable;
-import org.apache.hadoop.fs.FileAlreadyExistsException;
 
 /** A base class for {@link OutputFormat}. */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public abstract class FileOutputFormat<K, V> implements OutputFormat<K, V> {
 
   /**
@@ -111,6 +116,11 @@ public abstract class FileOutputFormat<K, V> implements OutputFormat<K, V> {
       // normalize the output directory
       outDir = fs.makeQualified(outDir);
       setOutputPath(job, outDir);
+      
+      // get delegation token for the outDir's file system
+      TokenCache.obtainTokensForNamenodes(job.getCredentials(), 
+                                          new Path[] {outDir}, job);
+      
       // check its existence
       if (fs.exists(outDir)) {
         throw new FileAlreadyExistsException("Output directory " + outDir + 

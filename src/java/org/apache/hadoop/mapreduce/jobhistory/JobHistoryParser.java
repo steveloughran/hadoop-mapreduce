@@ -22,10 +22,13 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FSDataInputStream;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.mapreduce.Counters;
+import org.apache.hadoop.mapreduce.JobACL;
 import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapred.JobPriority;
 import org.apache.hadoop.mapred.JobStatus;
@@ -33,6 +36,7 @@ import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapred.TaskStatus;
 import org.apache.hadoop.mapreduce.TaskType;
+import org.apache.hadoop.security.authorize.AccessControlList;
 
 /**
  * Default Parser for the JobHistory files. Typical usage is
@@ -40,6 +44,8 @@ import org.apache.hadoop.mapreduce.TaskType;
  * job = parser.parse();
  *
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class JobHistoryParser {
 
   private final FSDataInputStream in;
@@ -307,6 +313,8 @@ public class JobHistoryParser {
     info.username = event.getUserName();
     info.submitTime = event.getSubmitTime();
     info.jobConfPath = event.getJobConfPath();
+    info.jobACLs = event.getJobAcls();
+    info.jobQueueName = event.getJobQueueName();
   }
 
   /**
@@ -318,6 +326,7 @@ public class JobHistoryParser {
     JobID jobid;
     String username;
     String jobname;
+    String jobQueueName;
     String jobConfPath;
     long launchTime;
     int totalMaps;
@@ -331,6 +340,7 @@ public class JobHistoryParser {
     Counters mapCounters;
     Counters reduceCounters;
     JobPriority priority;
+    Map<JobACL, AccessControlList> jobACLs;
     
     Map<TaskID, TaskInfo> tasksMap;
     
@@ -341,14 +351,16 @@ public class JobHistoryParser {
       submitTime = launchTime = finishTime = -1;
       totalMaps = totalReduces = failedMaps = failedReduces = 0;
       finishedMaps = finishedReduces = 0;
-      username = jobname = jobConfPath = "";
+      username = jobname = jobConfPath = jobQueueName = "";
       tasksMap = new HashMap<TaskID, TaskInfo>();
+      jobACLs = new HashMap<JobACL, AccessControlList>();
     }
     
     /** Print all the job information */
     public void printAll() {
       System.out.println("JOBNAME: " + jobname);
       System.out.println("USERNAME: " + username);
+      System.out.println("JOB_QUEUE_NAME: " + jobQueueName);
       System.out.println("SUBMIT_TIME" + submitTime);
       System.out.println("LAUNCH_TIME: " + launchTime);
       System.out.println("JOB_STATUS: " + jobStatus);
@@ -374,6 +386,8 @@ public class JobHistoryParser {
     public String getUsername() { return username; }
     /** Get the job name */
     public String getJobname() { return jobname; }
+    /** Get the job queue name */
+    public String getJobQueueName() { return jobQueueName; }
     /** Get the path for the job configuration file */
     public String getJobConfPath() { return jobConfPath; }
     /** Get the job launch time */
@@ -402,6 +416,7 @@ public class JobHistoryParser {
     public Map<TaskID, TaskInfo> getAllTasks() { return tasksMap; }
     /** Get the priority of this job */
     public String getPriority() { return priority.toString(); }
+    public Map<JobACL, AccessControlList> getJobACLs() { return jobACLs; }
   }
   
   /**

@@ -39,11 +39,13 @@ import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.BytesWritable;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.QueueState;
+import static org.apache.hadoop.mapred.QueueManager.toFullPropertyName;
 import org.apache.hadoop.mapred.FakeObjectUtilities.FakeJobHistory;
 import org.apache.hadoop.mapreduce.TaskType;
+import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.mapreduce.server.jobtracker.TaskTracker;
 import org.apache.hadoop.mapreduce.split.JobSplit;
-import org.apache.hadoop.security.SecurityUtil.AccessControlList;
+import org.apache.hadoop.security.authorize.AccessControlList;
 
 
 public class CapacityTestUtils {
@@ -339,7 +341,7 @@ public class CapacityTestUtils {
     }
 
     @Override
-    public Task obtainNewMapTask(
+    public synchronized Task obtainNewMapTask(
       final TaskTrackerStatus tts, int clusterSize,
       int ignored) throws IOException {
       boolean areAllMapsRunning = (mapTaskCtr == numMapTasks);
@@ -385,7 +387,7 @@ public class CapacityTestUtils {
     }
 
     @Override
-    public Task obtainNewReduceTask(
+    public synchronized Task obtainNewReduceTask(
       final TaskTrackerStatus tts,
       int clusterSize, int ignored) throws IOException {
       boolean areAllReducesRunning = (redTaskCtr == numReduceTasks);
@@ -584,10 +586,8 @@ public class CapacityTestUtils {
       for (String queueName : queueNames) {
         HashMap<String, AccessControlList> aclsMap
           = new HashMap<String, AccessControlList>();
-        for (Queue.QueueOperation oper : Queue.QueueOperation.values()) {
-          String key = QueueManager.toFullPropertyName(
-            queueName,
-            oper.getAclName());
+        for (QueueACL qAcl : QueueACL.values()) {
+          String key = toFullPropertyName(queueName, qAcl.getAclName());
           aclsMap.put(key, allEnabledAcl);
         }
         queues[i++] = new Queue(queueName, aclsMap, QueueState.RUNNING);
@@ -678,7 +678,7 @@ public class CapacityTestUtils {
     }
 
     public int getNextHeartbeatInterval() {
-      return MRConstants.HEARTBEAT_INTERVAL_MIN;
+      return JTConfig.JT_HEARTBEAT_INTERVAL_MIN_DEFAULT;
     }
 
     /**

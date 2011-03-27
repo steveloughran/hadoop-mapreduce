@@ -20,6 +20,8 @@ package org.apache.hadoop.mapred;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
@@ -33,6 +35,8 @@ import org.apache.hadoop.io.MapFile;
  *  instead.
  */
 @Deprecated
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class SequenceFileInputFormat<K, V> extends FileInputFormat<K, V> {
 
   public SequenceFileInputFormat() {
@@ -44,7 +48,7 @@ public class SequenceFileInputFormat<K, V> extends FileInputFormat<K, V> {
     FileStatus[] files = super.listStatus(job);
     for (int i = 0; i < files.length; i++) {
       FileStatus file = files[i];
-      if (file.isDir()) {     // it's a MapFile
+      if (file.isDirectory()) {     // it's a MapFile
         Path dataFile = new Path(file.getPath(), MapFile.DATA_FILE_NAME);
         FileSystem fs = file.getPath().getFileSystem(job);
         // use the data file

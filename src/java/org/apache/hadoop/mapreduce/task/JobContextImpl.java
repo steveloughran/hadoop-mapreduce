@@ -21,6 +21,8 @@ package org.apache.hadoop.mapreduce.task;
 import java.io.IOException;
 import java.net.URI;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configuration.IntegerRanges;
 import org.apache.hadoop.fs.Path;
@@ -29,6 +31,7 @@ import org.apache.hadoop.mapreduce.InputFormat;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobID;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.Mapper;
 import org.apache.hadoop.mapreduce.OutputFormat;
 import org.apache.hadoop.mapreduce.Partitioner;
@@ -37,19 +40,34 @@ import org.apache.hadoop.mapreduce.filecache.DistributedCache;
 import org.apache.hadoop.mapreduce.lib.input.TextInputFormat;
 import org.apache.hadoop.mapreduce.lib.output.TextOutputFormat;
 import org.apache.hadoop.mapreduce.lib.partition.HashPartitioner;
+import org.apache.hadoop.security.Credentials;
+import org.apache.hadoop.security.UserGroupInformation;
 
 /**
  * A read-only view of the job that is provided to the tasks while they
  * are running.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class JobContextImpl implements JobContext {
 
   protected final org.apache.hadoop.mapred.JobConf conf;
-  private final JobID jobId;
+  private JobID jobId;
+  /**
+   * The UserGroupInformation object that has a reference to the current user
+   */
+  protected UserGroupInformation ugi;
+  protected final Credentials credentials;
   
   public JobContextImpl(Configuration conf, JobID jobId) {
     this.conf = new org.apache.hadoop.mapred.JobConf(conf);
     this.jobId = jobId;
+    this.credentials = this.conf.getCredentials();
+    try {
+      this.ugi = UserGroupInformation.getCurrentUser();
+    } catch (IOException e) {
+      throw new RuntimeException(e);
+    }
   }
 
   /**
@@ -66,6 +84,13 @@ public class JobContextImpl implements JobContext {
    */
   public JobID getJobID() {
     return jobId;
+  }
+  
+  /**
+   * Set the JobID.
+   */
+  public void setJobID(JobID jobId) {
+    this.jobId = jobId;
   }
   
   /**
@@ -239,7 +264,16 @@ public class JobContextImpl implements JobContext {
    * @return boolean 
    */
   public boolean getJobSetupCleanupNeeded() {
-    return conf.getBoolean("mapred.committer.job.setup.cleanup.needed", true);
+    return conf.getBoolean(MRJobConfig.SETUP_CLEANUP_NEEDED, true);
+  }
+  
+  /**
+   * Get whether task-cleanup is needed for the job 
+   * 
+   * @return boolean 
+   */
+  public boolean getTaskCleanupNeeded() {
+    return conf.getBoolean(MRJobConfig.TASK_CLEANUP_NEEDED, true);
   }
 
   /**
@@ -382,6 +416,10 @@ public class JobContextImpl implements JobContext {
    */
   public String getUser() {
     return conf.getUser();
+  }
+
+  public Credentials getCredentials() {
+    return credentials;
   }
   
 }

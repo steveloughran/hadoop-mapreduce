@@ -85,12 +85,16 @@ class MemoryMatcher {
   boolean matchesMemoryRequirements(JobInProgress job,TaskType taskType, 
                                     TaskTrackerStatus taskTracker) {
 
-    LOG.debug("Matching memory requirements of " + job.getJobID().toString()
-        + " for scheduling on " + taskTracker.trackerName);
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Matching memory requirements of " + job.getJobID().toString()
+                + " for scheduling on " + taskTracker.trackerName);
+    }
 
     if (!isSchedulingBasedOnMemEnabled()) {
-      LOG.debug("Scheduling based on job's memory requirements is disabled."
-          + " Ignoring any value set by job.");
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("Scheduling based on job's memory requirements is disabled."
+                  + " Ignoring any value set by job.");
+      }
       return true;
     }
 
@@ -98,11 +102,11 @@ class MemoryMatcher {
     long totalMemUsableOnTT = 0;
     long memForThisTask = 0;
     if (taskType == TaskType.MAP) {
-      memForThisTask = job.getJobConf().getMemoryForMapTask();
+      memForThisTask = job.getMemoryForMapTask();
       totalMemUsableOnTT =
           getMemSizeForMapSlot() * taskTracker.getMaxMapSlots();
     } else if (taskType == TaskType.REDUCE) {
-      memForThisTask = job.getJobConf().getMemoryForReduceTask();
+      memForThisTask = job.getMemoryForReduceTask();
       totalMemUsableOnTT =
           getMemSizeForReduceSlot()
               * taskTracker.getMaxReduceSlots();

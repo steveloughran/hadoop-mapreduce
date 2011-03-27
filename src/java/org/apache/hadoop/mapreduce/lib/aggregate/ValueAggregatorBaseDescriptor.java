@@ -21,14 +21,18 @@ package org.apache.hadoop.mapreduce.lib.aggregate;
 import java.util.ArrayList;
 import java.util.Map.Entry;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 
 /** 
  * This class implements the common functionalities of 
  * the subclasses of ValueAggregatorDescriptor class.
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class ValueAggregatorBaseDescriptor 
     implements ValueAggregatorDescriptor {
 
@@ -157,6 +161,6 @@ public class ValueAggregatorBaseDescriptor
    * @param conf a configuration object
    */
   public void configure(Configuration conf) {
-    this.inputFile = conf.get(JobContext.MAP_INPUT_FILE);
+    this.inputFile = conf.get(MRJobConfig.MAP_INPUT_FILE);
   }
 }

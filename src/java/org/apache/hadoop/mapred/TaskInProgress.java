@@ -21,7 +21,6 @@ package org.apache.hadoop.mapred;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collection;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Iterator;
@@ -130,10 +129,12 @@ class TaskInProgress {
   //task to commit, <taskattemptid>  
   private TaskAttemptID taskToCommit;
   
-  private Counters counters = new Counters();
+  private volatile Counters counters = new Counters();
   
   private HashMap<TaskAttemptID, Long> dispatchTimeMap = 
     new HashMap<TaskAttemptID, Long>();
+  
+  private String user;
   
 
   /**
@@ -157,6 +158,7 @@ class TaskInProgress {
     if (jobtracker != null) {
       this.jobHistory = jobtracker.getJobHistory();
     }
+    this.user = job.getUser();
   }
         
   /**
@@ -179,6 +181,7 @@ class TaskInProgress {
     if (jobtracker != null) {
       this.jobHistory = jobtracker.getJobHistory();
     }
+    this.user = job.getUser();
   }
   
   /**
@@ -382,7 +385,14 @@ class TaskInProgress {
   private void resetSuccessfulTaskid() {
     this.successfulTaskId = null; 
   }
+
+  String getUser() {
+    return user;
+  }
   
+  void setUser(String user) {
+    this.user = user;
+  }
   /**
    * Is this tip complete?
    * 
@@ -742,7 +752,9 @@ class TaskInProgress {
         machinesWhereFailed.add(trackerHostName);
         if(maxSkipRecords>0) {
           //skipping feature enabled
-          LOG.debug("TaskInProgress adding" + status.getNextRecordRange());
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("TaskInProgress adding" + status.getNextRecordRange());
+          }
           failedRanges.add(status.getNextRecordRange());
           skipping = startSkipping();
         }
@@ -1044,8 +1056,10 @@ class TaskInProgress {
     // create the task
     Task t = null;
     if (isMapTask()) {
-      LOG.debug("attempt " + numTaskFailures + " sending skippedRecords "
-          + failedRanges.getIndicesCount());
+      if (LOG.isDebugEnabled()) {
+        LOG.debug("attempt " + numTaskFailures + " sending skippedRecords "
+                  + failedRanges.getIndicesCount());
+      }
       t = new MapTask(jobFile, taskid, partition, splitInfo.getSplitIndex(),
           numSlotsNeeded);
     } else {
@@ -1063,7 +1077,10 @@ class TaskInProgress {
       cleanupTasks.put(taskid, taskTracker);
     }
     t.setConf(conf);
-    LOG.debug("Launching task with skipRanges:"+failedRanges.getSkipRanges());
+    t.setUser(getUser());
+    if (LOG.isDebugEnabled()) {
+      LOG.debug("Launching task with skipRanges:"+failedRanges.getSkipRanges());
+    }
     t.setSkipRanges(failedRanges.getSkipRanges());
     t.setSkipping(skipping);
     if(failedRanges.isTestAttempt()) {

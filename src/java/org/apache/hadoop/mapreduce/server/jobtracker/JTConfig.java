@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.mapreduce.server.jobtracker;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapreduce.MRConfig;
 
 /**
@@ -24,6 +26,8 @@ import org.apache.hadoop.mapreduce.MRConfig;
  * 
  * The keys should have "mapreduce.jobtracker." as the prefix
  */
+@InterfaceAudience.Private
+@InterfaceStability.Evolving
 public interface JTConfig extends MRConfig {
   // JobTracker configuration parameters
   public static final String JT_IPC_ADDRESS  = "mapreduce.jobtracker.address";
@@ -43,12 +47,20 @@ public interface JTConfig extends MRConfig {
     "mapreduce.jobtracker.heartbeats.in.second";
   public static final String JT_HEARTBEATS_SCALING_FACTOR = 
     "mapreduce.jobtracker.heartbeats.scaling.factor";
+  public static final String JT_HEARTBEAT_INTERVAL_MIN =
+    "mapreduce.jobtracker.heartbeat.interval.min";
+  public static final int JT_HEARTBEAT_INTERVAL_MIN_DEFAULT = 300;
   public static final String JT_PERSIST_JOBSTATUS = 
     "mapreduce.jobtracker.persist.jobstatus.active";
   public static final String JT_PERSIST_JOBSTATUS_HOURS = 
     "mapreduce.jobtracker.persist.jobstatus.hours";
   public static final String JT_PERSIST_JOBSTATUS_DIR = 
     "mapreduce.jobtracker.persist.jobstatus.dir";
+
+  /**
+   * @deprecated Use MR_SUPERGROUP instead
+   */
+  @Deprecated
   public static final String JT_SUPERGROUP = 
     "mapreduce.jobtracker.permissions.supergroup";
   public static final String JT_RETIREJOBS = 
@@ -90,6 +102,9 @@ public interface JTConfig extends MRConfig {
     "mapreduce.jobtracker.maxmapmemory.mb";
   public static final String JT_MAX_REDUCEMEMORY_MB = 
     "mapreduce.jobtracker.maxreducememory.mb";
-  public static final String MAX_JOB_SPLIT_METAINFO_SIZE = 
-  "mapreduce.job.split.metainfo.maxsize";
+  public static final String JT_MAX_JOB_SPLIT_METAINFO_SIZE = 
+  "mapreduce.jobtracker.split.metainfo.maxsize";
+  public static final String JT_USER_NAME = "mapreduce.jobtracker.kerberos.principal";
+  public static final String JT_KEYTAB_FILE = 
+    "mapreduce.jobtracker.keytab.file";
 }

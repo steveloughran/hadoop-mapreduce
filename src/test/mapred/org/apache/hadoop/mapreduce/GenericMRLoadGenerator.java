@@ -129,7 +129,7 @@ public class GenericMRLoadGenerator extends Configured implements Tool {
   }
 
   public int run(String [] argv) throws Exception {
-    Job job = new Job(getConf());
+    Job job = Job.getInstance(getConf());
     job.setJarByClass(GenericMRLoadGenerator.class);
     job.setMapperClass(SampleMapper.class);
     job.setReducerClass(SampleReducer.class);
@@ -166,7 +166,7 @@ public class GenericMRLoadGenerator extends Configured implements Tool {
           pathstack.push(p);
           while (!pathstack.empty()) {
             for (FileStatus stat : fs.listStatus(pathstack.pop())) {
-              if (stat.isDir()) {
+              if (stat.isDirectory()) {
                 if (!stat.getPath().getName().startsWith("_")) {
                   pathstack.push(stat.getPath());
                 }
@@ -207,7 +207,7 @@ public class GenericMRLoadGenerator extends Configured implements Tool {
   static class RandomInputFormat extends InputFormat<Text, Text> {
 
     public List<InputSplit> getSplits(JobContext job) {
-      int numSplits = job.getConfiguration().getInt(JobContext.NUM_MAPS, 1);
+      int numSplits = job.getConfiguration().getInt(MRJobConfig.NUM_MAPS, 1);
       List<InputSplit> splits = new ArrayList<InputSplit>();
       for (int i = 0; i < numSplits; ++i) {
         splits.add(new IndirectInputFormat.IndirectSplit(
@@ -324,7 +324,7 @@ public class GenericMRLoadGenerator extends Configured implements Tool {
       numMaps = 1;
       conf.setLong(RandomTextWriter.BYTES_PER_MAP, totalBytesToWrite);
     }
-    conf.setInt(JobContext.NUM_MAPS, numMaps);
+    conf.setInt(MRJobConfig.NUM_MAPS, numMaps);
   }
 
 

@@ -25,6 +25,8 @@ import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.mapred.ClusterStatus.BlackListInfo;
 import org.apache.hadoop.mapreduce.Cluster;
@@ -34,11 +36,16 @@ import org.apache.hadoop.mapreduce.QueueInfo;
 import org.apache.hadoop.mapreduce.TaskTrackerInfo;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.filecache.DistributedCache;
+import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapreduce.tools.CLI;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
-import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
+import org.apache.hadoop.io.Text;
+import org.apache.hadoop.ipc.RemoteException;
+import org.apache.hadoop.security.AccessControlException;
+import org.apache.hadoop.security.token.Token;
+import org.apache.hadoop.security.token.SecretManager.InvalidToken;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -127,6 +134,8 @@ import org.apache.hadoop.util.ToolRunner;
  * @deprecated Use {@link Job} and {@link Cluster} instead
  */
 @Deprecated
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class JobClient extends CLI {
   public static enum TaskStatusFilter { NONE, KILLED, FAILED, SUCCEEDED, ALL }
   private TaskStatusFilter taskOutputFilter = TaskStatusFilter.FAILED; 
@@ -157,11 +166,15 @@ public class JobClient extends CLI {
       this.job = job;
     }
 
+    public Configuration getConfiguration() {
+      return job.getConfiguration();
+    }
+
     /**
      * An identifier for the job
      */
     public JobID getID() {
-      return JobID.downgrade(job.getID());
+      return JobID.downgrade(job.getJobID());
     }
     
     /** @deprecated This method is deprecated and will be removed. Applications should 
@@ -521,7 +534,6 @@ public class JobClient extends CLI {
       conf.setBooleanIfUnset("mapred.reducer.new-api", false);
       Job job = Job.getInstance(cluster, conf);
       job.submit();
-      conf.setUser(job.getUser());
       return new NetworkedJob(job);
     } catch (InterruptedException ie) {
       throw new IOException("interrupted", ie);
@@ -792,7 +804,7 @@ public class JobClient extends CLI {
   }
 
   static String getTaskLogURL(TaskAttemptID taskId, String baseUrl) {
-    return (baseUrl + "/tasklog?plaintext=true&taskid=" + taskId); 
+    return (baseUrl + "/tasklog?plaintext=true&attemptid=" + taskId); 
   }
   
   static Configuration getConfiguration(String jobTrackerSpec)
@@ -1029,6 +1041,41 @@ public class JobClient extends CLI {
     } catch (InterruptedException ie) {
       throw new IOException(ie);
     }
+  }
+
+  /**
+   * Get a delegation token for the user from the JobTracker.
+   * @param renewer the user who can renew the token
+   * @return the new token
+   * @throws IOException
+   */
+  public Token<DelegationTokenIdentifier> 
+    getDelegationToken(Text renewer) throws IOException, InterruptedException {
+    return cluster.getDelegationToken(renewer);
+  }
+
+  /**
+   * Renew a delegation token
+   * @param token the token to renew
+   * @return true if the renewal went well
+   * @throws InvalidToken
+   * @throws IOException
+   */
+  public long renewDelegationToken(Token<DelegationTokenIdentifier> token
+                                   ) throws InvalidToken, IOException, 
+                                            InterruptedException {
+    return cluster.renewDelegationToken(token);
+  }
+
+  /**
+   * Cancel a delegation token from the JobTracker
+   * @param token the token to cancel
+   * @throws IOException
+   */
+  public void cancelDelegationToken(Token<DelegationTokenIdentifier> token
+                                    ) throws InvalidToken, IOException, 
+                                             InterruptedException {
+    cluster.cancelDelegationToken(token);
   }
 
   /**

@@ -18,18 +18,20 @@
 
 package org.apache.hadoop.tools;
 
+import java.io.DataInput;
+import java.io.DataOutput;
 import java.io.FileNotFoundException;
 import java.io.IOException;
-
+import java.io.UnsupportedEncodingException;
+import java.net.URLEncoder;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 import java.util.TreeMap;
-
-import javax.security.auth.login.LoginException;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
@@ -45,6 +47,7 @@ import org.apache.hadoop.io.IntWritable;
 import org.apache.hadoop.io.LongWritable;
 import org.apache.hadoop.io.SequenceFile;
 import org.apache.hadoop.io.Text;
+import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.mapred.FileInputFormat;
 import org.apache.hadoop.mapred.FileOutputFormat;
 import org.apache.hadoop.mapred.FileSplit;
@@ -56,15 +59,12 @@ import org.apache.hadoop.mapred.Mapper;
 import org.apache.hadoop.mapred.OutputCollector;
 import org.apache.hadoop.mapred.RecordReader;
 import org.apache.hadoop.mapred.Reducer;
-import org.apache.hadoop.mapred.SequenceFileRecordReader;
 import org.apache.hadoop.mapred.Reporter;
+import org.apache.hadoop.mapred.SequenceFileRecordReader;
 import org.apache.hadoop.mapred.lib.NullOutputFormat;
 import org.apache.hadoop.mapreduce.Cluster;
-import org.apache.hadoop.mapreduce.Job;
-import org.apache.hadoop.mapreduce.JobContext;
 import org.apache.hadoop.mapreduce.JobSubmissionFiles;
-import org.apache.hadoop.security.UnixUserGroupInformation;
-import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
@@ -76,6 +76,7 @@ import org.apache.hadoop.util.ToolRunner;
  * Hadoop archives look at {@link HarFileSystem}.
  */
 public class HadoopArchives implements Tool {
+  public static final int VERSION = 3;
   private static final Log LOG = LogFactory.getLog(HadoopArchives.class);
   
   private static final String NAME = "har"; 
@@ -87,9 +88,15 @@ public class HadoopArchives implements Tool {
   static final String TOTAL_SIZE_LABEL = NAME + ".total.size";
   static final String DST_HAR_LABEL = NAME + ".archive.name";
   static final String SRC_PARENT_LABEL = NAME + ".parent.path";
-  // size of each part file
-  // its fixed for now.
-  static final long partSize = 2 * 1024 * 1024 * 1024l;
+  /** the size of the blocks that will be created when archiving **/
+  static final String HAR_BLOCKSIZE_LABEL = NAME + ".block.size";
+  /**the size of the part files that will be created when archiving **/
+  static final String HAR_PARTSIZE_LABEL = NAME + ".partfile.size";
+
+  /** size of each part file size **/
+  long partSize = 2 * 1024 * 1024 * 1024l;
+  /** size of blocks in hadoop archives **/
+  long blockSize = 512 * 1024 * 1024l;
 
   private static final String usage = "archive"
   + " -archiveName NAME -p <parent path> <src>* <dest>" +
@@ -128,22 +135,68 @@ public class HadoopArchives implements Tool {
   /**
    * this assumes that there are two types of files file/dir
    * @param fs the input filesystem
-   * @param p the top level path 
+   * @param fdir the filestatusdir of the path  
    * @param out the list of paths output of recursive ls
    * @throws IOException
    */
-  private void recursivels(FileSystem fs, Path p, List<FileStatus> out) 
+  private void recursivels(FileSystem fs, FileStatusDir fdir, List<FileStatusDir> out) 
   throws IOException {
-    FileStatus fstatus = fs.getFileStatus(p);
-    if (!fstatus.isDir()) {
-      out.add(fstatus);
+    if (fdir.getFileStatus().isFile()) {
+      out.add(fdir);
       return;
     }
     else {
-      out.add(fstatus);
-      FileStatus[] listStatus = fs.listStatus(p);
+      out.add(fdir);
+      FileStatus[] listStatus = fs.listStatus(fdir.getFileStatus().getPath());
+      fdir.setChildren(listStatus);
       for (FileStatus stat: listStatus) {
-        recursivels(fs, stat.getPath(), out);
+        FileStatusDir fstatDir = new FileStatusDir(stat, null);
+        recursivels(fs, fstatDir, out);
+      }
+    }
+  }
+
+  /** HarEntry is used in the {@link HArchivesMapper} as the input value. */
+  private static class HarEntry implements Writable {
+    String path;
+    String[] children;
+
+    HarEntry() {}
+    
+    HarEntry(String path, String[] children) {
+      this.path = path;
+      this.children = children;
+    }
+
+    boolean isDir() {
+      return children != null;      
+    }
+
+    @Override
+    public void readFields(DataInput in) throws IOException {
+      path = Text.readString(in);
+
+      if (in.readBoolean()) {
+        children = new String[in.readInt()];
+        for(int i = 0; i < children.length; i++) {
+          children[i] = Text.readString(in);
+        }
+      } else {
+        children = null;
+      }
+    }
+
+    @Override
+    public void write(DataOutput out) throws IOException {
+      Text.writeString(out, path);
+
+      final boolean dir = isDir();
+      out.writeBoolean(dir);
+      if (dir) {
+        out.writeInt(children.length);
+        for(String c : children) {
+          Text.writeString(out, c);
+        }
       }
     }
   }
@@ -152,8 +205,7 @@ public class HadoopArchives implements Tool {
    * Input format of a hadoop archive job responsible for 
    * generating splits of the file list
    */
-
-  static class HArchiveInputFormat implements InputFormat<LongWritable, Text> {
+  static class HArchiveInputFormat implements InputFormat<LongWritable, HarEntry> {
 
     //generate input splits from the src file lists
     public InputSplit[] getSplits(JobConf jconf, int numSplits)
@@ -173,7 +225,7 @@ public class HadoopArchives implements Tool {
       FileStatus fstatus = fs.getFileStatus(src);
       ArrayList<FileSplit> splits = new ArrayList<FileSplit>(numSplits);
       LongWritable key = new LongWritable();
-      Text value = new Text();
+      final HarEntry value = new HarEntry();
       SequenceFile.Reader reader = null;
       // the remaining bytes in the file split
       long remaining = fstatus.getLen();
@@ -210,9 +262,10 @@ public class HadoopArchives implements Tool {
       return splits.toArray(new FileSplit[splits.size()]);
     }
 
-    public RecordReader<LongWritable, Text> getRecordReader(InputSplit split,
+    @Override
+    public RecordReader<LongWritable, HarEntry> getRecordReader(InputSplit split,
         JobConf job, Reporter reporter) throws IOException {
-      return new SequenceFileRecordReader<LongWritable, Text>(job,
+      return new SequenceFileRecordReader<LongWritable, HarEntry>(job,
                  (FileSplit)split);
     }
   }
@@ -248,7 +301,7 @@ public class HadoopArchives implements Tool {
     // just take some effort to do it 
     // rather than just using substring 
     // so that we do not break sometime later
-    Path justRoot = new Path(Path.SEPARATOR);
+    final Path justRoot = new Path(Path.SEPARATOR);
     if (fullPath.depth() == root.depth()) {
       return justRoot;
     }
@@ -330,18 +383,64 @@ public class HadoopArchives implements Tool {
     }
     Set<Map.Entry<String, HashSet<String>>> keyVals = allpaths.entrySet();
     for (Map.Entry<String, HashSet<String>> entry : keyVals) {
-      Path relPath = relPathToRoot(new Path(entry.getKey()), parentPath);
+      final Path relPath = relPathToRoot(new Path(entry.getKey()), parentPath);
       if (relPath != null) {
-        String toWrite = relPath + " dir ";
-        HashSet<String> children = entry.getValue();
-        StringBuffer sbuff = new StringBuffer();
-        sbuff.append(toWrite);
-        for (String child: children) {
-          sbuff.append(child + " ");
+        final String[] children = new String[entry.getValue().size()];
+        int i = 0;
+        for(String child: entry.getValue()) {
+          children[i++] = child;
         }
-        toWrite = sbuff.toString();
-        srcWriter.append(new LongWritable(0L), new Text(toWrite));
+        append(srcWriter, 0L, relPath.toString(), children);
       }
+    }
+  }
+
+  private void append(SequenceFile.Writer srcWriter, long len,
+      String path, String[] children) throws IOException {
+    srcWriter.append(new LongWritable(len), new HarEntry(path, children));
+  }
+    
+  /**
+   * A static class that keeps
+   * track of status of a path 
+   * and there children if path is a dir
+   */
+  static class FileStatusDir {
+    private FileStatus fstatus;
+    private FileStatus[] children = null;
+    
+    /**
+     * constructor for filestatusdir
+     * @param fstatus the filestatus object that maps to filestatusdir
+     * @param children the children list if fs is a directory
+     */
+    FileStatusDir(FileStatus fstatus, FileStatus[] children) {
+      this.fstatus  = fstatus;
+      this.children = children;
+    }
+    
+    /**
+     * set children of this object
+     * @param listStatus the list of children
+     */
+    public void setChildren(FileStatus[] listStatus) {
+      this.children = listStatus;
+    }
+
+    /**
+     * the filestatus of this object
+     * @return the filestatus of this object
+     */
+    FileStatus getFileStatus() {
+      return this.fstatus;
+    }
+    
+    /**
+     * the children list of this object, null if  
+     * @return the children list
+     */
+    FileStatus[] getChildren() {
+      return this.children;
     }
   }
   
@@ -357,6 +456,10 @@ public class HadoopArchives implements Tool {
     int numFiles = 0;
     long totalSize = 0;
     FileSystem fs = parentPath.getFileSystem(conf);
+    this.blockSize = conf.getLong(HAR_BLOCKSIZE_LABEL, blockSize);
+    this.partSize = conf.getLong(HAR_PARTSIZE_LABEL, partSize);
+    conf.setLong(HAR_BLOCKSIZE_LABEL, blockSize);
+    conf.setLong(HAR_PARTSIZE_LABEL, partSize);
     conf.set(DST_HAR_LABEL, archiveName);
     conf.set(SRC_PARENT_LABEL, parentPath.makeQualified(fs).toString());
     Path outputPath = new Path(dest, archiveName);
@@ -366,7 +469,6 @@ public class HadoopArchives implements Tool {
       throw new IOException("Invalid Output: " + outputPath);
     }
     conf.set(DST_DIR_LABEL, outputPath.toString());
-    final String randomId = DistCp.getRandomId();
     Path stagingArea;
     try {
       stagingArea = JobSubmissionFiles.getStagingDir(new Cluster(conf), 
@@ -375,7 +477,7 @@ public class HadoopArchives implements Tool {
       throw new IOException(ie);
     }
     Path jobDirectory = new Path(stagingArea,
-                          NAME + "_" + randomId);
+        NAME+"_"+Integer.toString(new Random().nextInt(Integer.MAX_VALUE), 36));
     FsPermission mapredSysPerms = 
       new FsPermission(JobSubmissionFiles.JOB_DIR_PERMISSION);
     FileSystem.mkdirs(jobDirectory.getFileSystem(conf), jobDirectory,
@@ -386,7 +488,7 @@ public class HadoopArchives implements Tool {
     Path srcFiles = new Path(jobDirectory, "_har_src_files");
     conf.set(SRC_LIST_LABEL, srcFiles.toString());
     SequenceFile.Writer srcWriter = SequenceFile.createWriter(jobfs, conf,
-        srcFiles, LongWritable.class, Text.class, 
+        srcFiles, LongWritable.class, HarEntry.class, 
         SequenceFile.CompressionType.NONE);
     // get the list of files 
     // create single list of files and dirs
@@ -400,27 +502,27 @@ public class HadoopArchives implements Tool {
       // and then write them to the input file 
       // one at a time
       for (Path src: srcPaths) {
-        ArrayList<FileStatus> allFiles = new ArrayList<FileStatus>();
-        recursivels(fs, src, allFiles);
-        for (FileStatus stat: allFiles) {
-          String toWrite = "";
-          long len = stat.isDir()? 0:stat.getLen();
-          if (stat.isDir()) {
-            toWrite = "" + relPathToRoot(stat.getPath(), parentPath) + " dir ";
+        ArrayList<FileStatusDir> allFiles = new ArrayList<FileStatusDir>();
+        FileStatus fstatus = fs.getFileStatus(src);
+        FileStatusDir fdir = new FileStatusDir(fstatus, null);
+        recursivels(fs, fdir, allFiles);
+        for (FileStatusDir statDir: allFiles) {
+          FileStatus stat = statDir.getFileStatus();
+          long len = stat.isDirectory()? 0:stat.getLen();
+          final Path path = relPathToRoot(stat.getPath(), parentPath);
+          final String[] children;
+          if (stat.isDirectory()) {
             //get the children 
-            FileStatus[] list = fs.listStatus(stat.getPath());
-            StringBuffer sbuff = new StringBuffer();
-            sbuff.append(toWrite);
-            for (FileStatus stats: list) {
-              sbuff.append(stats.getPath().getName() + " ");
+            FileStatus[] list = statDir.getChildren();
+            children = new String[list.length];
+            for (int i = 0; i < list.length; i++) {
+              children[i] = list[i].getPath().getName();
             }
-            toWrite = sbuff.toString();
           }
           else {
-            toWrite +=  relPathToRoot(stat.getPath(), parentPath) + " file ";
+            children = null;
           }
-          srcWriter.append(new LongWritable(len), new 
-              Text(toWrite));
+          append(srcWriter, len, path.toString(), children);
           srcWriter.sync();
           numFiles++;
           totalSize += len;
@@ -443,7 +545,6 @@ public class HadoopArchives implements Tool {
     conf.setReducerClass(HArchivesReducer.class);
     conf.setMapOutputKeyClass(IntWritable.class);
     conf.setMapOutputValueClass(Text.class);
-    conf.set(JobContext.HISTORY_LOCATION, "none");
     FileInputFormat.addInputPath(conf, jobDirectory);
     //make sure no speculative execution is done
     conf.setSpeculativeExecution(false);
@@ -457,7 +558,7 @@ public class HadoopArchives implements Tool {
   }
 
   static class HArchivesMapper 
-  implements Mapper<LongWritable, Text, IntWritable, Text> {
+  implements Mapper<LongWritable, HarEntry, IntWritable, Text> {
     private JobConf conf = null;
     int partId = -1 ; 
     Path tmpOutputDir = null;
@@ -468,20 +569,23 @@ public class HadoopArchives implements Tool {
     FileSystem destFs = null;
     byte[] buffer;
     int buf_size = 128 * 1024;
-    
+    long blockSize = 512 * 1024 * 1024l;
+
     // configure the mapper and create 
     // the part file.
     // use map reduce framework to write into
     // tmp files. 
     public void configure(JobConf conf) {
       this.conf = conf;
+
       // this is tightly tied to map reduce
       // since it does not expose an api 
       // to get the partition
-      partId = conf.getInt(JobContext.TASK_PARTITION, -1);
+      partId = conf.getInt(MRJobConfig.TASK_PARTITION, -1);
       // create a file name using the partition
       // we need to write to this directory
       tmpOutputDir = FileOutputFormat.getWorkOutputPath(conf);
+      blockSize = conf.getLong(HAR_BLOCKSIZE_LABEL, blockSize);
       // get the output path and write to the tmp 
       // directory 
       partname = "part-" + partId;
@@ -497,10 +601,11 @@ public class HadoopArchives implements Tool {
         //this was a stale copy
         if (destFs.exists(tmpOutput)) {
           destFs.delete(tmpOutput, false);
-        }
-        partStream = destFs.create(tmpOutput);
+        } 
+        partStream = destFs.create(tmpOutput, false, conf.getInt("io.file.buffer.size", 4096), 
+            destFs.getDefaultReplication(), blockSize);
       } catch(IOException ie) {
-        throw new RuntimeException("Unable to open output file " + tmpOutput);
+        throw new RuntimeException("Unable to open output file " + tmpOutput, ie);
       }
       buffer = new byte[buf_size];
     }
@@ -517,28 +622,6 @@ public class HadoopArchives implements Tool {
         fsin.close();
       }
     }
-       
-    static class MapStat {
-      private String pathname;
-      private boolean isDir;
-      private List<String> children;
-      public MapStat(String line) {
-        String[] splits = line.split(" ");
-        pathname = splits[0];
-        if ("dir".equals(splits[1])) {
-          isDir = true;
-        }
-        else {
-          isDir = false;
-        }
-        if (isDir) {
-          children = new ArrayList<String>();
-          for (int i = 2; i < splits.length; i++) {
-            children.add(splits[i]);
-          }
-        }
-      }
-    }
     
     /**
      * get rid of / in the beginning of path
@@ -553,41 +636,57 @@ public class HadoopArchives implements Tool {
       return new Path(parent, new Path(p.toString().substring(1)));
     }
 
+    private static String encodeName(String s) 
+      throws UnsupportedEncodingException {
+      return URLEncoder.encode(s,"UTF-8");
+    }
+
+    private static String encodeProperties( FileStatus fStatus )
+      throws UnsupportedEncodingException {
+      String propStr = encodeName(
+          fStatus.getModificationTime() + " "
+        + fStatus.getPermission().toShort() + " "
+        + encodeName(fStatus.getOwner()) + " "
+        + encodeName(fStatus.getGroup()));
+      return propStr;
+    }
+
     // read files from the split input 
     // and write it onto the part files.
     // also output hash(name) and string 
     // for reducer to create index 
     // and masterindex files.
-    public void map(LongWritable key, Text value,
+    public void map(LongWritable key, HarEntry value,
         OutputCollector<IntWritable, Text> out,
         Reporter reporter) throws IOException {
-      String line  = value.toString();
-      MapStat mstat = new MapStat(line);
-      Path relPath = new Path(mstat.pathname);
+      Path relPath = new Path(value.path);
       int hash = HarFileSystem.getHarHash(relPath);
       String towrite = null;
       Path srcPath = realPath(relPath, rootPath);
       long startPos = partStream.getPos();
-      if (mstat.isDir) { 
-        towrite = relPath.toString() + " " + "dir none " + 0 + " " + 0 + " ";
+      FileSystem srcFs = srcPath.getFileSystem(conf);
+      FileStatus srcStatus = srcFs.getFileStatus(srcPath);
+      String propStr = encodeProperties(srcStatus);
+      if (value.isDir()) { 
+        towrite = encodeName(relPath.toString())
+                  + " dir " + propStr + " 0 0 ";
         StringBuffer sbuff = new StringBuffer();
         sbuff.append(towrite);
-        for (String child: mstat.children) {
-          sbuff.append(child + " ");
+        for (String child: value.children) {
+          sbuff.append(encodeName(child) + " ");
         }
         towrite = sbuff.toString();
         //reading directories is also progress
         reporter.progress();
       }
       else {
-        FileSystem srcFs = srcPath.getFileSystem(conf);
-        FileStatus srcStatus = srcFs.getFileStatus(srcPath);
         FSDataInputStream input = srcFs.open(srcStatus.getPath());
         reporter.setStatus("Copying file " + srcStatus.getPath() + 
             " to archive.");
         copyData(srcStatus.getPath(), input, partStream, reporter);
-        towrite = relPath.toString() + " file " + partname + " " + startPos
-        + " " + srcStatus.getLen() + " ";
+        towrite = encodeName(relPath.toString())
+                  + " file " + partname + " " + startPos
+                  + " " + srcStatus.getLen() + " " + propStr + " ";
       }
       out.collect(new IntWritable(hash), new Text(towrite));
     }
@@ -633,7 +732,7 @@ public class HadoopArchives implements Tool {
         }
         indexStream = fs.create(index);
         outStream = fs.create(masterIndex);
-        String version = HarFileSystem.VERSION + " \n";
+        String version = VERSION + " \n";
         outStream.write(version.getBytes());
         
       } catch(IOException e) {
@@ -747,10 +846,18 @@ public class HadoopArchives implements Tool {
       for (Path p: srcPaths) {
         FileSystem fs = p.getFileSystem(getConf());
         FileStatus[] statuses = fs.globStatus(p);
-        for (FileStatus status: statuses) {
-          globPaths.add(fs.makeQualified(status.getPath()));
+        if (statuses != null) {
+          for (FileStatus status: statuses) {
+            globPaths.add(fs.makeQualified(status.getPath()));
+          }
         }
       }
+      if (globPaths.isEmpty()) {
+        throw new IOException("The resolved paths set is empty."
+            + "  Please check whether the srcPaths exist, where srcPaths = "
+            + srcPaths);
+      }
+
       archive(parentPath, globPaths, archiveName, destPath);
     } catch(IOException ie) {
       System.err.println(ie.getLocalizedMessage());
@@ -769,8 +876,13 @@ public class HadoopArchives implements Tool {
       ret = ToolRunner.run(harchives, args);
     } catch(Exception e) {
       LOG.debug("Exception in archives  ", e);
-      System.err.println("Exception in archives");
-      System.err.println(e.getLocalizedMessage());
+      System.err.println(e.getClass().getSimpleName() + " in archives");
+      final String s = e.getLocalizedMessage();
+      if (s != null) {
+        System.err.println(s);
+      } else {
+        e.printStackTrace(System.err);
+      }
       System.exit(1);
     }
     System.exit(ret);

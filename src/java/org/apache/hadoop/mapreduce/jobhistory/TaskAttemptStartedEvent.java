@@ -20,6 +20,8 @@ package org.apache.hadoop.mapreduce.jobhistory;
 
 import java.io.IOException;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.TaskType;
@@ -30,6 +32,8 @@ import org.apache.avro.util.Utf8;
  * Event to record start of a task attempt
  *
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class TaskAttemptStartedEvent implements HistoryEvent {
   private TaskAttemptStarted datum = new TaskAttemptStarted();
 
@@ -77,7 +81,11 @@ public class TaskAttemptStartedEvent implements HistoryEvent {
   }
   /** Get the event type */
   public EventType getEventType() {
-    return EventType.MAP_ATTEMPT_STARTED;
+    // Note that the task type can be setup/map/reduce/cleanup but the 
+    // attempt-type can only be map/reduce.
+   return getTaskId().getTaskType() == TaskType.MAP 
+           ? EventType.MAP_ATTEMPT_STARTED 
+           : EventType.REDUCE_ATTEMPT_STARTED;
   }
 
 }

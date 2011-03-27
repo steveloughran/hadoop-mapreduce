@@ -31,19 +31,20 @@ import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.JobSubmissionFiles;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
 import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 
-@InterfaceAudience.Private
 /**
  * A utility that reads the split meta info and creates
  * split meta info objects
  */
-
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class SplitMetaInfoReader {
   
   public static JobSplit.TaskSplitMetaInfo[] readSplitMetaInfo(
       JobID jobId, FileSystem fs, Configuration conf, Path jobSubmitDir) 
   throws IOException {
-    long maxMetaInfoSize = conf.getLong(JTConfig.MAX_JOB_SPLIT_METAINFO_SIZE, 
+    long maxMetaInfoSize = conf.getLong(JTConfig.JT_MAX_JOB_SPLIT_METAINFO_SIZE, 
         10000000L);
     Path metaSplitFile = JobSubmissionFiles.getJobSplitMetaFile(jobSubmitDir);
     FileStatus fStatus = fs.getFileStatus(metaSplitFile);

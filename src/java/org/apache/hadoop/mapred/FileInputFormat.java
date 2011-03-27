@@ -31,11 +31,14 @@ import java.util.Set;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.BlockLocation;
 import org.apache.hadoop.fs.FileStatus;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.PathFilter;
+import org.apache.hadoop.mapreduce.security.TokenCache;
 import org.apache.hadoop.net.NetworkTopology;
 import org.apache.hadoop.net.Node;
 import org.apache.hadoop.net.NodeBase;
@@ -55,10 +58,15 @@ import org.apache.hadoop.util.StringUtils;
  *  instead.
  */
 @Deprecated
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
 
   public static final Log LOG =
     LogFactory.getLog(FileInputFormat.class);
+
+  public static final String NUM_INPUT_FILES =
+    org.apache.hadoop.mapreduce.lib.input.FileInputFormat.NUM_INPUT_FILES;
 
   private static final double SPLIT_SLOP = 1.1;   // 10% slop
 
@@ -140,6 +148,30 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
         ReflectionUtils.newInstance(filterClass, conf) : null;
   }
 
+  /**
+   * Add files in the input path recursively into the results.
+   * @param result
+   *          The List to store all files.
+   * @param fs
+   *          The FileSystem.
+   * @param path
+   *          The input path.
+   * @param inputFilter
+   *          The input filter that can be used to filter files/dirs. 
+   * @throws IOException
+   */
+  protected void addInputPathRecursively(List<FileStatus> result,
+      FileSystem fs, Path path, PathFilter inputFilter) 
+      throws IOException {
+    for(FileStatus stat: fs.listStatus(path, inputFilter)) {
+      if (stat.isDirectory()) {
+        addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
+      } else {
+        result.add(stat);
+      }
+    }          
+  }
+  
   /** List input directories.
    * Subclasses may override to, e.g., select only files matching a regular
    * expression. 
@@ -154,6 +186,12 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
       throw new IOException("No input paths specified in job");
     }
 
+    // get tokens for all the required FileSystems..
+    TokenCache.obtainTokensForNamenodes(job.getCredentials(), dirs, job);
+    
+    // Whether we need to recursive look into the directory structure
+    boolean recursive = job.getBoolean("mapred.input.dir.recursive", false);
+    
     List<FileStatus> result = new ArrayList<FileStatus>();
     List<IOException> errors = new ArrayList<IOException>();
     
@@ -176,10 +214,14 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
         errors.add(new IOException("Input Pattern " + p + " matches 0 files"));
       } else {
         for (FileStatus globStat: matches) {
-          if (globStat.isDir()) {
+          if (globStat.isDirectory()) {
             for(FileStatus stat: fs.listStatus(globStat.getPath(),
                 inputFilter)) {
-              result.add(stat);
+              if (recursive && stat.isDirectory()) {
+                addInputPathRecursively(result, fs, stat.getPath(), inputFilter);
+              } else {
+                result.add(stat);
+              }
             }          
           } else {
             result.add(globStat);
@@ -211,9 +253,11 @@ public abstract class FileInputFormat<K, V> implements InputFormat<K, V> {
     throws IOException {
     FileStatus[] files = listStatus(job);
     
+    // Save the number of input files for metrics/loadgen
+    job.setLong(NUM_INPUT_FILES, files.length);
     long totalSize = 0;                           // compute total size
     for (FileStatus file: files) {                // check we have valid files
-      if (file.isDir()) {
+      if (file.isDirectory()) {
         throw new IOException("Not a file: "+ file.getPath());
       }
       totalSize += file.getLen();

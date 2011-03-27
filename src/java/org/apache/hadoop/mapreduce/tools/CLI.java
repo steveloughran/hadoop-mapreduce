@@ -23,8 +23,11 @@ import java.util.List;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.conf.Configured;
+import org.apache.hadoop.ipc.RemoteException;
 import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.TIPStatus;
 import org.apache.hadoop.mapreduce.Cluster;
@@ -39,12 +42,15 @@ import org.apache.hadoop.mapreduce.TaskReport;
 import org.apache.hadoop.mapreduce.TaskTrackerInfo;
 import org.apache.hadoop.mapreduce.TaskType;
 import org.apache.hadoop.mapreduce.jobhistory.HistoryViewer;
+import org.apache.hadoop.security.AccessControlException;
 import org.apache.hadoop.util.Tool;
 import org.apache.hadoop.util.ToolRunner;
 
 /**
  * Interprets the map reduce cli options 
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class CLI extends Configured implements Tool {
   private static final Log LOG = LogFactory.getLog(CLI.class);
 
@@ -211,16 +217,16 @@ public class CLI extends Configured implements Tool {
       if (submitJobFile != null) {
         Job job = Job.getInstance(cluster, new JobConf(submitJobFile));
         job.submit();
-        System.out.println("Created job " + job.getID());
+        System.out.println("Created job " + job.getJobID());
         exitCode = 0;
       } else if (getStatus) {
         Job job = cluster.getJob(JobID.forName(jobid));
         if (job == null) {
           System.out.println("Could not find job " + jobid);
         } else {
+          Counters counters = job.getCounters();
           System.out.println();
           System.out.println(job);
-          Counters counters = job.getCounters();
           if (counters != null) {
             System.out.println(counters);
           } else {
@@ -307,6 +313,13 @@ public class CLI extends Configured implements Tool {
           exitCode = -1;
         }
       }
+    } catch (RemoteException re) {
+      IOException unwrappedException = re.unwrapRemoteException();
+      if (unwrappedException instanceof AccessControlException) {
+        System.out.println(unwrappedException.getMessage());
+      } else {
+        throw re;
+      }
     } finally {
       cluster.close();
     }
@@ -346,7 +359,7 @@ public class CLI extends Configured implements Tool {
         " <job-id> <group-name> <counter-name>]");
     } else if ("-events".equals(cmd)) {
       System.err.println(prefix + "[" + cmd + 
-        " <job-id> <from-event-#> <#-of-events>]");
+        " <job-id> <from-event-#> <#-of-events>]. Event #s start from 1.");
     } else if ("-history".equals(cmd)) {
       System.err.println(prefix + "[" + cmd + " <jobHistoryFile>]");
     } else if ("-list".equals(cmd)) {
@@ -410,7 +423,7 @@ public class CLI extends Configured implements Tool {
       throws IOException, InterruptedException {
     TaskCompletionEvent[] events = job.
       getTaskCompletionEvents(fromEventId, numEvents);
-    System.out.println("Task completion events for " + job.getID());
+    System.out.println("Task completion events for " + job.getJobID());
     System.out.println("Number of events (from " + fromEventId + ") are: " 
       + events.length);
     for(TaskCompletionEvent event: events) {
@@ -421,7 +434,7 @@ public class CLI extends Configured implements Tool {
   }
 
   protected static String getTaskLogURL(TaskAttemptID taskId, String baseUrl) {
-    return (baseUrl + "/tasklog?plaintext=true&taskid=" + taskId); 
+    return (baseUrl + "/tasklog?plaintext=true&attemptid=" + taskId); 
   }
   
 
@@ -516,7 +529,7 @@ public class CLI extends Configured implements Tool {
     System.out.println("JobId\tState\tStartTime\t" +
       "UserName\tPriority\tSchedulingInfo");
     for (Job job : jobs) {
-      System.out.printf("%s\t%s\t%d\t%s\t%s\t%s\n", job.getID().toString(),
+      System.out.printf("%s\t%s\t%d\t%s\t%s\t%s\n", job.getJobID().toString(),
         job.getJobState(), job.getStartTime(),
         job.getUser(), job.getPriority().name(), job.getSchedulingInfo());
     }

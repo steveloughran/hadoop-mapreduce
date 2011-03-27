@@ -18,7 +18,12 @@
 
 package org.apache.hadoop.mapreduce;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
+
 // Counters used by Task classes
+@InterfaceAudience.Public
+@InterfaceStability.Evolving
 public enum TaskCounter {
   MAP_INPUT_RECORDS, 
   MAP_OUTPUT_RECORDS,
@@ -36,5 +41,9 @@ public enum TaskCounter {
   SPILLED_RECORDS,
   SHUFFLED_MAPS, 
   FAILED_SHUFFLE,
-  MERGED_MAP_OUTPUTS
+  MERGED_MAP_OUTPUTS,
+  GC_TIME_MILLIS,
+  CPU_MILLISECONDS,
+  PHYSICAL_MEMORY_BYTES,
+  VIRTUAL_MEMORY_BYTES
 }

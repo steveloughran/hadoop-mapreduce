@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.io.DataInput;
 import java.io.DataOutput;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableUtils;
@@ -36,6 +38,8 @@ import org.apache.hadoop.io.WritableUtils;
  * <p><code>Counters</code> are bunched into Groups, each comprising of
  * counters from a particular <code>Enum</code> class. 
  */
+@InterfaceAudience.Public
+@InterfaceStability.Stable
 public class Counter implements Writable {
 
   private String name;
@@ -113,7 +117,15 @@ public class Counter implements Writable {
   public synchronized long getValue() {
     return value;
   }
-    
+
+  /**
+   * Set this counter by the given value
+   * @param value the value to set
+   */
+  public synchronized void setValue(long value) {
+    this.value = value;
+  }
+
   /**
    * Increment this counter by the given value
    * @param incr the value to increase this counter by

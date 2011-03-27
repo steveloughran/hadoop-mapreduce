@@ -198,8 +198,27 @@ public class DefaultTaskController extends TaskController {
   @Override
   void enableTaskForCleanup(PathDeletionContext context)
          throws IOException {
+    enablePathForCleanup(context);
+  }
+  
+  /**
+   * Enables the job for cleanup by changing permissions of the specified path
+   * in the local filesystem
+   */
+  @Override
+  void enableJobForCleanup(PathDeletionContext context)
+         throws IOException {
+    enablePathForCleanup(context);
+  }
+  
+  /**
+   * Enables the path for cleanup by changing permissions of the specified path
+   * in the local filesystem
+   */
+  private void enablePathForCleanup(PathDeletionContext context)
+         throws IOException {
     try {
-      FileUtil.chmod(context.fullPath, "ug+rwx", true);
+      FileUtil.chmod(context.fullPath, "u+rwx", true);
     } catch(InterruptedException e) {
       LOG.warn("Interrupted while setting permissions for " + context.fullPath +
           " for deletion.");

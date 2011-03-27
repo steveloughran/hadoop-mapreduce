@@ -64,6 +64,14 @@
        <Class name="org.apache.hadoop.mapred.jobdetails_jsp"/>
        <Bug pattern="HRS_REQUEST_PARAMETER_TO_HTTP_HEADER"/>
      </Match>
+     <Match>
+       <Class name="org.apache.hadoop.mapred.taskstats_jsp"/>
+       <Bug pattern="HRS_REQUEST_PARAMETER_TO_HTTP_HEADER"/>
+     </Match>
+     <Match>
+       <Class name="org.apache.hadoop.mapred.jobtasks_jsp"/>
+       <Bug pattern="HRS_REQUEST_PARAMETER_TO_HTTP_HEADER"/>
+     </Match>
      <!--
        Ignore warnings where child class has the same name as
        super class. Classes based on Old API shadow names from
@@ -196,14 +204,41 @@
        <Method name="getSplits" />
        <Bug pattern="DLS_DEAD_LOCAL_STORE" />
      </Match>
+     <!--
+       org.apache.hadoop.mapred.IndexCache is thread-safe. It does not need
+       synchronous access. 
+      -->
+     <Match>
+       <Class name="org.apache.hadoop.mapred.TaskTracker" />
+       <Field name="indexCache" />
+       <Bug pattern="IS2_INCONSISTENT_SYNC" />
+     </Match>
     <!--
-      This is a spurious warning. Just ignore
+      None of the following variables should be referenced by any thread
+      but the collection thread in MapTask
     -->
      <Match>
        <Class name="org.apache.hadoop.mapred.MapTask$MapOutputBuffer" />
        <Field name="kvindex" />
        <Bug pattern="IS2_INCONSISTENT_SYNC" />
      </Match>
+     <Match>
+       <Class name="org.apache.hadoop.mapred.MapTask$MapOutputBuffer" />
+       <Field name="bufferRemaining" />
+       <Bug pattern="IS2_INCONSISTENT_SYNC" />
+     </Match>
+     <Match>
+       <Class name="org.apache.hadoop.mapred.MapTask$MapOutputBuffer" />
+       <Field name="equator" />
+       <Bug pattern="IS2_INCONSISTENT_SYNC" />
+     </Match>
+
+    <!-- This is spurious. -->
+    <Match>
+      <Class name="org.apache.hadoop.mapred.MapTask$MapOutputBuffer$SpillThread" />
+      <Method name="run" />
+      <Bug pattern="UL_UNRELEASED_LOCK_EXCEPTION_PATH" />
+    </Match>
 
      <Match>
        <Class name="org.apache.hadoop.mapreduce.task.reduce.MergeThread" />
@@ -333,4 +368,24 @@
       <Method name="getHexDigit"/>
       <Bug pattern="ICAST_QUESTIONABLE_UNSIGNED_RIGHT_SHIFT" />
      </Match>
+
+     <!-- 
+	   False positive of FindBugs complaining that initializationPoller and
+	   started were accessed through
+	   CapacitySchedulerQueueRefresher.refreshQueues without explicitly holding
+	   the lock of CapacityTaskScheduler. The lock is in fact acquired by
+	   JobTracker prior to calling QueueManager.refereshQueues - this is
+	   necessary to ensure the order of locking (TaskScheduler ->
+	   QueueManager).
+     --> 
+    <Match>
+       <Class name="org.apache.hadoop.mapred.CapacityTaskScheduler" />
+       <Field name="initializationPoller" />
+       <Bug pattern="IS2_INCONSISTENT_SYNC" />
+    </Match>
+    <Match>
+       <Class name="org.apache.hadoop.mapred.CapacityTaskScheduler" />
+       <Field name="started" />
+       <Bug pattern="IS2_INCONSISTENT_SYNC" />
+    </Match>
  </FindBugsFilter>

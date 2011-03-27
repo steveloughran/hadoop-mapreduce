@@ -33,7 +33,7 @@ done
 # convert relative path to absolute path
 bin=`dirname "$this"`
 bin=`cd "$bin"; pwd`
-script=`basename $bin`
+script=`basename $this`
 this="$bin/$script"
 
 MUMAK_HOME=`dirname $bin`
@@ -70,9 +70,9 @@ if [ -f "${HADOOP_CONF_DIR}/hadoop-env.sh" ]; then
   . "${HADOOP_CONF_DIR}/hadoop-env.sh"
 fi
 
-# Define HADOOP_CORE_HOME
+# Define HADOOP_COMMON_HOME
 if [ "$HADOP_CORE_HOME" = "" ]; then
-  HADOOP_CORE_HOME=$HADOOP_HOME
+  HADOOP_COMMON_HOME=$HADOOP_HOME
 fi
 
 if [ "$JAVA_HOME" = "" ]; then
@@ -96,7 +96,7 @@ JAVA_HEAP_MAX=-Xmx1200m
 # Hadoop Common jar
 # Hadoop Common test jar
 # Depending 3rd party jars
-CLASSPATH=${MUMAK_HOME}/conf:${HADOOP_HOME}/conf:$JAVA_HOME/lib/tools.jar
+CLASSPATH=${MUMAK_HOME}/conf:${HADOOP_CONF_DIR}:$JAVA_HOME/lib/tools.jar
 
 if [ $IN_RELEASE = 0 ]; then
   CLASSPATH=${CLASSPATH}:${HADOOP_HOME}/build/contrib/${project}/classes
@@ -109,6 +109,10 @@ if [ $IN_RELEASE = 0 ]; then
   done
 
   for f in $HADOOP_HOME/build/ivy/lib/${project}/common/*.jar; do
+    CLASSPATH=${CLASSPATH}:$f;
+  done
+
+  for f in $HADOOP_HOME/build/ivy/lib/${project}/test/*.jar; do
     CLASSPATH=${CLASSPATH}:$f;
   done
 else
@@ -140,18 +144,18 @@ fi
 
 # setup 'java.library.path' for native-hadoop code if necessary
 JAVA_LIBRARY_PATH=''
-if [ -d "${HADOOP_CORE_HOME}/build/native" -o -d "${HADOOP_CORE_HOME}/lib/native" ]; then
+if [ -d "${HADOOP_COMMON_HOME}/build/native" -o -d "${HADOOP_COMMON_HOME}/lib/native" ]; then
   JAVA_PLATFORM=`CLASSPATH=${CLASSPATH} ${JAVA} -Xmx32m org.apache.hadoop.util.PlatformName | sed -e "s/ /_/g"`
   
-  if [ -d "$HADOOP_CORE_HOME/build/native" ]; then
-    JAVA_LIBRARY_PATH=${HADOOP_CORE_HOME}/build/native/${JAVA_PLATFORM}/lib
+  if [ -d "$HADOOP_COMMON_HOME/build/native" ]; then
+    JAVA_LIBRARY_PATH=${HADOOP_COMMON_HOME}/build/native/${JAVA_PLATFORM}/lib
   fi
   
-  if [ -d "${HADOOP_CORE_HOME}/lib/native" ]; then
+  if [ -d "${HADOOP_COMMON_HOME}/lib/native" ]; then
     if [ "x$JAVA_LIBRARY_PATH" != "x" ]; then
-      JAVA_LIBRARY_PATH=${JAVA_LIBRARY_PATH}:${HADOOP_CORE_HOME}/lib/native/${JAVA_PLATFORM}
+      JAVA_LIBRARY_PATH=${JAVA_LIBRARY_PATH}:${HADOOP_COMMON_HOME}/lib/native/${JAVA_PLATFORM}
     else
-      JAVA_LIBRARY_PATH=${HADOOP_CORE_HOME}/lib/native/${JAVA_PLATFORM}
+      JAVA_LIBRARY_PATH=${HADOOP_COMMON_HOME}/lib/native/${JAVA_PLATFORM}
     fi
   fi
 fi
@@ -165,10 +169,10 @@ fi
 HADOOP_OPTS="$HADOOP_OPTS -Dhadoop.policy.file=$HADOOP_POLICYFILE"
 
 function print_usage(){
-  echo "Usage: $script trace.json topology.json"
+  echo "Usage: $script [--config dir] trace.json topology.json"
 }
 
-if [ $# != 2 ]; then
+if [ $# <= 2 ]; then
   print_usage
   exit
 fi

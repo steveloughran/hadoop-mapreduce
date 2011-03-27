@@ -20,13 +20,14 @@ package org.apache.hadoop.mapred;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.io.IOUtils;
 import org.apache.hadoop.mapred.TaskScheduler.QueueRefresher;
+import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueState;
-import org.apache.hadoop.security.SecurityUtil.AccessControlList;
 import org.apache.hadoop.security.UserGroupInformation;
+import org.apache.hadoop.security.authorize.AccessControlList;
 import org.apache.hadoop.util.StringUtils;
 import org.codehaus.jackson.JsonFactory;
 import org.codehaus.jackson.JsonGenerationException;
@@ -38,7 +39,6 @@ import java.io.IOException;
 import java.io.Writer;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.Map;
 import java.util.Set;
 import java.util.List;
@@ -81,24 +81,25 @@ import java.net.URL;
  * in mapred-site.xml. However, when configured in the latter, there is
  * no support for hierarchical queues.
  */
-
-class QueueManager {
+@InterfaceAudience.Private
+public class QueueManager {
 
   private static final Log LOG = LogFactory.getLog(QueueManager.class);
 
   // Map of a queue name and Queue object
   private Map<String, Queue> leafQueues = new HashMap<String,Queue>();
   private Map<String, Queue> allQueues = new HashMap<String, Queue>();
-  static final String QUEUE_CONF_FILE_NAME = "mapred-queues.xml";
+  public static final String QUEUE_CONF_FILE_NAME = "mapred-queues.xml";
   static final String QUEUE_CONF_DEFAULT_FILE_NAME = "mapred-queues-default.xml";
 
-  // Prefix in configuration for queue related keys
-  static final String QUEUE_CONF_PROPERTY_NAME_PREFIX
-    = "mapred.queue.";
-  //Resource in which queue acls are configured.
+  //Prefix in configuration for queue related keys
+  static final String QUEUE_CONF_PROPERTY_NAME_PREFIX = "mapred.queue.";
 
+  //Resource in which queue acls are configured.
   private Queue root = null;
-  private boolean isAclEnabled = false;
+  
+  // represents if job and queue acls are enabled on the mapreduce cluster
+  private boolean areAclsEnabled = false;
 
   /**
    * Factory method to create an appropriate instance of a queue
@@ -116,7 +117,7 @@ class QueueManager {
    * @return Queue configuration parser
    */
   static QueueConfigurationParser getQueueConfigurationParser(
-    Configuration conf, boolean reloadConf) {
+    Configuration conf, boolean reloadConf, boolean areAclsEnabled) {
     if (conf != null && conf.get(
       DeprecatedQueueConfigurationParser.MAPRED_QUEUE_NAMES_KEY) != null) {
       if (reloadConf) {
@@ -135,7 +136,8 @@ class QueueManager {
       InputStream stream = null;
       try {
         stream = xmlInUrl.openStream();
-        return new QueueConfigurationParser(new BufferedInputStream(stream));
+        return new QueueConfigurationParser(new BufferedInputStream(stream),
+            areAclsEnabled);
       } catch (IOException ioe) {
         throw new RuntimeException("Couldn't open queue configuration at " +
                                    xmlInUrl, ioe);
@@ -145,8 +147,13 @@ class QueueManager {
     }
   }
 
-  public QueueManager() {
-    initialize(getQueueConfigurationParser(null, false));
+  QueueManager() {// acls are disabled
+    this(false);
+  }
+
+  QueueManager(boolean areAclsEnabled) {
+    this.areAclsEnabled = areAclsEnabled;
+    initialize(getQueueConfigurationParser(null, false, areAclsEnabled));
   }
 
   /**
@@ -158,10 +165,11 @@ class QueueManager {
    * is found in mapred-site.xml, it will then look for site configuration
    * in mapred-queues.xml supporting hierarchical queues.
    *
-   * @param conf Configuration object where queue configuration is specified.
+   * @param clusterConf    mapreduce cluster configuration
    */
-  public QueueManager(Configuration conf) {
-    initialize(getQueueConfigurationParser(conf, false));
+  public QueueManager(Configuration clusterConf) {
+    areAclsEnabled = clusterConf.getBoolean(MRConfig.MR_ACLS_ENABLED, false);
+    initialize(getQueueConfigurationParser(clusterConf, false, areAclsEnabled));
   }
 
   /**
@@ -173,8 +181,10 @@ class QueueManager {
    *
    * @param confFile File where the queue configuration is found.
    */
-  QueueManager(String confFile) {
-    QueueConfigurationParser cp = new QueueConfigurationParser(confFile);
+  QueueManager(String confFile, boolean areAclsEnabled) {
+    this.areAclsEnabled = areAclsEnabled;
+    QueueConfigurationParser cp =
+        new QueueConfigurationParser(confFile, areAclsEnabled);
     initialize(cp);
   }
 
@@ -195,9 +205,7 @@ class QueueManager {
     allQueues.putAll(leafQueues);
 
     LOG.info("AllQueues : " + allQueues + "; LeafQueues : " + leafQueues);
-    this.isAclEnabled = cp.isAclsEnabled();
   }
-
 
   /**
    * Return the set of leaf level queues configured in the system to
@@ -214,49 +222,21 @@ class QueueManager {
   }
 
   /**
-   * Return true if the given {@link Queue.QueueOperation} can be
-   * performed by the specified user on the given queue.
+   * Return true if the given user is part of the ACL for the given
+   * {@link QueueACL} name for the given queue.
    * <p/>
    * An operation is allowed if all users are provided access for this
    * operation, or if either the user or any of the groups specified is
    * provided access.
    *
    * @param queueName Queue on which the operation needs to be performed.
-   * @param oper      The operation to perform
+   * @param qACL      The queue ACL name to be checked
    * @param ugi       The user and groups who wish to perform the operation.
-   * @return true if the operation is allowed, false otherwise.
+   * @return true     if the operation is allowed, false otherwise.
    */
   public synchronized boolean hasAccess(
-    String queueName,
-    Queue.QueueOperation oper,
-    UserGroupInformation ugi) {
-    return hasAccess(queueName, null, oper, ugi);
-  }
+    String queueName, QueueACL qACL, UserGroupInformation ugi) {
 
-  /**
-   * Return true if the given {@link Queue.QueueOperation} can be
-   * performed by the specified user on the specified job in the given queue.
-   * <p/>
-   * An operation is allowed either if the owner of the job is the user
-   * performing the task, all users are provided access for this
-   * operation, or if either the user or any of the groups specified is
-   * provided access.
-   * <p/>
-   * If the {@link Queue.QueueOperation} is not job specific then the
-   * job parameter is ignored.
-   *
-   * @param queueName Queue on which the operation needs to be performed.
-   * @param job       The {@link JobInProgress} on which the operation is being
-   *                  performed.
-   * @param oper      The operation to perform
-   * @param ugi       The user and groups who wish to perform the operation.
-   * @return true if the operation is allowed, false otherwise.
-   */
-  public synchronized boolean hasAccess(
-    String queueName, JobInProgress job,
-    Queue.QueueOperation oper,
-    UserGroupInformation ugi) {
-    
     Queue q = leafQueues.get(queueName);
 
     if (q == null) {
@@ -269,50 +249,23 @@ class QueueManager {
       return false;
     }
 
-    if (!isAclsEnabled()) {
+    if (!areAclsEnabled()) {
       return true;
     }
 
     if (LOG.isDebugEnabled()) {
-      LOG.debug(
-        "checking access for : "
-          + QueueManager.toFullPropertyName(queueName, oper.getAclName()));
-    }
-
-    if (oper.isJobOwnerAllowed()) {
-      if (job != null
-        && job.getJobConf().getUser().equals(ugi.getUserName())) {
-        return true;
-      }
+      LOG.debug("Checking access for the acl " + toFullPropertyName(queueName,
+        qACL.getAclName()) + " for user " + ugi.getShortUserName());
     }
 
     AccessControlList acl = q.getAcls().get(
-      toFullPropertyName(
-        queueName,
-        oper.getAclName()));
+        toFullPropertyName(queueName, qACL.getAclName()));
     if (acl == null) {
       return false;
     }
 
-    // Check the ACL list
-    boolean allowed = acl.allAllowed();
-    if (!allowed) {
-      // Check the allowed users list
-      if (acl.getUsers().contains(ugi.getUserName())) {
-        allowed = true;
-      } else {
-        // Check the allowed groups list
-        Set<String> allowedGroups = acl.getGroups();
-        for (String group : ugi.getGroupNames()) {
-          if (allowedGroups.contains(group)) {
-            allowed = true;
-            break;
-          }
-        }
-      }
-    }
-
-    return allowed;
+    // Check if user is part of the ACL
+    return acl.isUserAllowed(ugi);
   }
 
   /**
@@ -389,7 +342,7 @@ class QueueManager {
 
     // Create a new configuration parser using the passed conf object.
     QueueConfigurationParser cp =
-        QueueManager.getQueueConfigurationParser(conf, true);
+        getQueueConfigurationParser(conf, true, areAclsEnabled);
 
     /*
      * (1) Validate the refresh of properties owned by QueueManager. As of now,
@@ -438,7 +391,8 @@ class QueueManager {
     LOG.info("Queue configuration is refreshed successfully.");
   }
 
-  static final String toFullPropertyName(
+  // this method is for internal use only
+  public static final String toFullPropertyName(
     String queue,
     String property) {
     return QUEUE_CONF_PROPERTY_NAME_PREFIX + queue + "." + property;
@@ -509,16 +463,16 @@ class QueueManager {
     //List of all QueueAclsInfo objects , this list is returned
     ArrayList<QueueAclsInfo> queueAclsInfolist =
       new ArrayList<QueueAclsInfo>();
-    Queue.QueueOperation[] operations = Queue.QueueOperation.values();
+    QueueACL[] qAcls = QueueACL.values();
     for (String queueName : leafQueues.keySet()) {
       QueueAclsInfo queueAclsInfo = null;
       ArrayList<String> operationsAllowed = null;
-      for (Queue.QueueOperation operation : operations) {
-        if (hasAccess(queueName, operation, ugi)) {
+      for (QueueACL qAcl : qAcls) {
+        if (hasAccess(queueName, qAcl, ugi)) {
           if (operationsAllowed == null) {
             operationsAllowed = new ArrayList<String>();
           }
-          operationsAllowed.add(operation.getAclName());
+          operationsAllowed.add(qAcl.getAclName());
         }
       }
       if (operationsAllowed != null) {
@@ -531,8 +485,7 @@ class QueueManager {
       }
     }
     return queueAclsInfolist.toArray(
-      new QueueAclsInfo[
-        queueAclsInfolist.size()]);
+      new QueueAclsInfo[queueAclsInfolist.size()]);
   }
 
   /**
@@ -608,8 +561,8 @@ class QueueManager {
    *
    * @return true if ACLs are enabled.
    */
-  boolean isAclsEnabled() {
-    return isAclEnabled;
+  boolean areAclsEnabled() {
+    return areAclsEnabled;
   }
 
   /**
@@ -620,7 +573,30 @@ class QueueManager {
   Queue getRoot() {
     return root;
   }
-  
+
+  /**
+   * Returns the specific queue ACL for the given queue.
+   * Returns null if the given queue does not exist or the acl is not
+   * configured for that queue.
+   * If acls are disabled(mapreduce.cluster.acls.enabled set to false), returns
+   * ACL with all users.
+   */
+  synchronized AccessControlList getQueueACL(String queueName,
+      QueueACL qACL) {
+    if (areAclsEnabled) {
+      Queue q = leafQueues.get(queueName);
+      if (q != null) {
+        return q.getAcls().get(toFullPropertyName(
+          queueName, qACL.getAclName()));
+      }
+      else {
+        LOG.warn("Queue " + queueName + " is not present.");
+        return null;
+      }
+    }
+    return new AccessControlList("*");
+  }
+
   /**
    * Dumps the configuration of hierarchy of queues
    * @param out the writer object to which dump is written
@@ -643,17 +619,21 @@ class QueueManager {
         MAPRED_QUEUE_NAMES_KEY) != null) {
       return;
     }
+    
     JsonFactory dumpFactory = new JsonFactory();
     JsonGenerator dumpGenerator = dumpFactory.createJsonGenerator(out);
     QueueConfigurationParser parser;
+    boolean aclsEnabled = false;
+    if (conf != null) {
+      aclsEnabled = conf.getBoolean(MRConfig.MR_ACLS_ENABLED, false);
+    }
     if (configFile != null && !"".equals(configFile)) {
-      parser = new QueueConfigurationParser(configFile);
+      parser = new QueueConfigurationParser(configFile, aclsEnabled);
     }
     else {
-      parser = QueueManager.getQueueConfigurationParser(null, false);
+      parser = getQueueConfigurationParser(null, false, aclsEnabled);
     }
     dumpGenerator.writeStartObject();
-    dumpGenerator.writeBooleanField("acls_enabled", parser.isAclsEnabled());
     dumpGenerator.writeFieldName("queues");
     dumpGenerator.writeStartArray();
     dumpConfiguration(dumpGenerator,parser.getRoot().getChildren());
@@ -681,24 +661,23 @@ class QueueManager {
       AccessControlList administerJobsList = null;
       if (queue.getAcls() != null) {
         submitJobList =
-          queue.getAcls().get(QueueManager.toFullPropertyName(queue.getName(),
-              Queue.QueueOperation.SUBMIT_JOB.getAclName()));
+          queue.getAcls().get(toFullPropertyName(queue.getName(),
+              QueueACL.SUBMIT_JOB.getAclName()));
         administerJobsList =
-          queue.getAcls().get(QueueManager.toFullPropertyName(queue.getName(),
-              Queue.QueueOperation.ADMINISTER_JOBS.getAclName()));
+          queue.getAcls().get(toFullPropertyName(queue.getName(),
+              QueueACL.ADMINISTER_JOBS.getAclName()));
       }
-      StringBuilder aclsSubmitJobValue = new StringBuilder();
+      String aclsSubmitJobValue = " ";
       if (submitJobList != null ) {
-        aclsSubmitJobValue = getAclsInfo(submitJobList);
+        aclsSubmitJobValue = submitJobList.getAclString();
       }
-      dumpGenerator.writeStringField("acl_submit_job",
-          aclsSubmitJobValue.toString());
-      StringBuilder aclsAdministerValue = new StringBuilder();
+      dumpGenerator.writeStringField("acl_submit_job", aclsSubmitJobValue);
+      String aclsAdministerValue = " ";
       if (administerJobsList != null) {
-        aclsAdministerValue = getAclsInfo(administerJobsList);
+        aclsAdministerValue = administerJobsList.getAclString();
       }
       dumpGenerator.writeStringField("acl_administer_jobs",
-          aclsAdministerValue.toString());
+          aclsAdministerValue);
       dumpGenerator.writeFieldName("properties");
       dumpGenerator.writeStartArray();
       if (queue.getProperties() != null) {
@@ -722,31 +701,4 @@ class QueueManager {
     }
   }
 
-  private static StringBuilder getAclsInfo(AccessControlList accessControlList) {
-    StringBuilder sb = new StringBuilder();
-    if (accessControlList.getUsers() != null &&
-        accessControlList.getUsers().size() > 0) {
-      Set<String> users = accessControlList.getUsers();
-      Iterator<String> iterator = users.iterator();
-      while (iterator.hasNext()) {
-        sb.append(iterator.next());
-        if (iterator.hasNext()) {
-          sb.append(",");
-        }
-      }
-    }
-    if (accessControlList.getGroups() != null &&
-        accessControlList.getGroups().size() > 0) {
-      sb.append(" ");
-      Set<String> groups = accessControlList.getGroups();
-      Iterator<String> iterator = groups.iterator();
-      while (iterator.hasNext()) {
-        sb.append(iterator.next());
-        if (iterator.hasNext()) {
-          sb.append(",");
-        }
-      }
-    }
-    return sb;
-  }
 }

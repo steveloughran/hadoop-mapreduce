@@ -20,6 +20,7 @@ package org.apache.hadoop.mapred;
 import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.URI;
+import java.security.PrivilegedExceptionAction;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -32,6 +33,7 @@ import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.permission.FsPermission;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
+import org.apache.hadoop.hdfs.protocol.HdfsFileStatus;
 import org.apache.hadoop.hdfs.server.namenode.NameNode;
 import org.apache.hadoop.io.DataOutputBuffer;
 import org.apache.hadoop.io.Text;
@@ -42,7 +44,6 @@ import org.apache.hadoop.mapred.lib.IdentityReducer;
 import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.SleepJob;
 import org.apache.hadoop.net.NetUtils;
-import org.apache.hadoop.security.UnixUserGroupInformation;
 import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
@@ -195,22 +196,21 @@ public class TestSubmitJob extends TestCase {
    */
   public void testSecureJobExecution() throws Exception {
     LOG.info("Testing secure job submission/execution");
-    MiniDFSCluster dfs = null;
     MiniMRCluster mr = null;
+    Configuration conf = new Configuration();
+    final MiniDFSCluster dfs = new MiniDFSCluster(conf, 1, true, null);
     try {
-      Configuration conf = new Configuration();
-      UnixUserGroupInformation.saveToConf(conf,
-      UnixUserGroupInformation.UGI_PROPERTY_NAME, 
-      TestMiniMRWithDFSWithDistinctUsers.DFS_UGI);
-      dfs = new MiniDFSCluster(conf, 1, true, null);
-      FileSystem fs = dfs.getFileSystem();
+      FileSystem fs = 
+        TestMiniMRWithDFSWithDistinctUsers.DFS_UGI.doAs(new PrivilegedExceptionAction<FileSystem>() {
+          public FileSystem run() throws IOException {
+            return dfs.getFileSystem();
+          }
+        });
       TestMiniMRWithDFSWithDistinctUsers.mkdir(fs, "/user");
       TestMiniMRWithDFSWithDistinctUsers.mkdir(fs, "/mapred");
       TestMiniMRWithDFSWithDistinctUsers.mkdir(fs, 
           conf.get(JTConfig.JT_STAGING_AREA_ROOT));
-      UnixUserGroupInformation MR_UGI = 
-        TestMiniMRWithDFSWithDistinctUsers.createUGI(
-           UnixUserGroupInformation.login().getUserName(), false); 
+      UserGroupInformation MR_UGI = UserGroupInformation.getLoginUser();
       mr = new MiniMRCluster(0, 0, 1, dfs.getFileSystem().getUri().toString(),
                              1, null, null, MR_UGI);
       JobTracker jt = mr.getJobTrackerRunner().getJobTracker();
@@ -223,12 +223,11 @@ public class TestSubmitJob extends TestCase {
       final Path reduceSignalFile = new Path(TEST_DIR, "reduce-signal");
       
       // create a ugi for user 1
-      UnixUserGroupInformation user1 = 
+      UserGroupInformation user1 = 
         TestMiniMRWithDFSWithDistinctUsers.createUGI("user1", false);
       Path inDir = new Path("/user/input");
       Path outDir = new Path("/user/output");
-      JobConf job = 
-      TestMiniMRWithDFSWithDistinctUsers.createJobConf(mr, user1);
+      final JobConf job = mr.createJobConf();
 
       UtilsForTests.configureWaitingJobConf(job, inDir, outDir, 2, 0, 
         "test-submit-job", mapSignalFile.toString(), 
@@ -238,43 +237,52 @@ public class TestSubmitJob extends TestCase {
       job.set(UtilsForTests.getTaskSignalParameter(false), 
       reduceSignalFile.toString());
       LOG.info("Submit job as the actual user (" + user1.getUserName() + ")");
-      JobClient jClient = new JobClient(job);
-      RunningJob rJob = jClient.submitJob(job);
+      final JobClient jClient = 
+        user1.doAs(new PrivilegedExceptionAction<JobClient>() {
+          public JobClient run() throws IOException {
+            return new JobClient(job);
+          }
+        });
+      RunningJob rJob = user1.doAs(new PrivilegedExceptionAction<RunningJob>() {
+        public RunningJob run() throws IOException {
+          return jClient.submitJob(job);
+        }
+      });
       JobID id = rJob.getID();
       LOG.info("Running job " + id);
 
       // create user2
-      UnixUserGroupInformation user2 = 
+      UserGroupInformation user2 = 
         TestMiniMRWithDFSWithDistinctUsers.createUGI("user2", false);
-      JobConf conf_other = 
-      TestMiniMRWithDFSWithDistinctUsers.createJobConf(mr, user2);
+      JobConf conf_other = mr.createJobConf();
       org.apache.hadoop.hdfs.protocol.ClientProtocol client = 
         getDFSClient(conf_other, user2);
 
       // try accessing mapred.system.dir/jobid/*
-      boolean failed = false;
       try {
-        Path path = new Path(new URI(jt.getSystemDir()).getPath());
+        String path = new URI(jt.getSystemDir()).getPath();
         LOG.info("Try listing the mapred-system-dir as the user (" 
                  + user2.getUserName() + ")");
-        client.getListing(path.toString());
+        client.getListing(path, HdfsFileStatus.EMPTY_NAME, false);
+        fail("JobTracker system dir is accessible to others");
       } catch (IOException ioe) {
-        failed = true;
+        assertTrue(ioe.toString(),
+          ioe.toString().contains("Permission denied"));
       }
-      assertTrue("JobTracker system dir is accessible to others", failed);
       // try accessing ~/.staging/jobid/*
-      failed = false;
       JobInProgress jip = jt.getJob(id);
       Path jobSubmitDirpath = 
         new Path(jip.getJobConf().get("mapreduce.job.dir"));
       try {
         LOG.info("Try accessing the job folder for job " + id + " as the user (" 
                  + user2.getUserName() + ")");
-        client.getListing(jobSubmitDirpath.toString());
+        client.getListing(jobSubmitDirpath.toUri().getPath(),
+          HdfsFileStatus.EMPTY_NAME, false);
+        fail("User's staging folder is accessible to others");
       } catch (IOException ioe) {
-        failed = true;
+        assertTrue(ioe.toString(),
+          ioe.toString().contains("Permission denied"));
       }
-      assertTrue("User's staging folder is accessible to others", failed);
       UtilsForTests.signalTasks(dfs, fs, true, mapSignalFile.toString(), 
       reduceSignalFile.toString());
       // wait for job to be done

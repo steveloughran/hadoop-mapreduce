@@ -32,9 +32,12 @@ import java.util.Map.Entry;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Pattern;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.ChecksumException;
 import org.apache.hadoop.fs.CreateFlag;
 import org.apache.hadoop.fs.FSDataOutputStream;
@@ -46,6 +49,7 @@ import org.apache.hadoop.mapred.JobConf;
 import org.apache.hadoop.mapred.JobTracker;
 import org.apache.hadoop.mapreduce.JobID;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.util.StringUtils;
 
 /**
@@ -53,6 +57,8 @@ import org.apache.hadoop.util.StringUtils;
  * job history information.
  *
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class JobHistory {
 
   final Log LOG = LogFactory.getLog(JobHistory.class);
@@ -87,6 +93,13 @@ public class JobHistory {
     Collections.<JobID,MovedFileInfo>synchronizedMap(
         new LinkedHashMap<JobID, MovedFileInfo>());
 
+  // JobHistory filename regex
+  public static final Pattern JOBHISTORY_FILENAME_REGEX = 
+    Pattern.compile("(" + JobID.JOBID_REGEX + ")_.+");
+  // JobHistory conf-filename regex
+  public static final Pattern CONF_FILENAME_REGEX =
+    Pattern.compile("(" + JobID.JOBID_REGEX + ")_conf.xml(?:\\.[0-9]+\\.old)?");
+  
   private static class MovedFileInfo {
     private final String historyFile;
     private final long timestamp;
@@ -107,13 +120,13 @@ public class JobHistory {
       long jobTrackerStartTime) throws IOException {
 
     // Get and create the log folder
-    String logDirLoc = conf.get(JTConfig.JT_JOBHISTORY_LOCATION ,
+    final String logDirLoc = conf.get(JTConfig.JT_JOBHISTORY_LOCATION ,
         "file:///" +
         new File(System.getProperty("hadoop.log.dir")).getAbsolutePath()
         + File.separator + "history");
 
     LOG.info("History log directory is " + logDirLoc);
-
+    
     logDir = new Path(logDirLoc);
     logDirFs = logDir.getFileSystem(conf);
 
@@ -139,8 +152,9 @@ public class JobHistory {
     String doneLocation =
       conf.get(JTConfig.JT_JOBHISTORY_COMPLETED_LOCATION);
     if (doneLocation != null) {
-      done = fs.makeQualified(new Path(doneLocation));
-      doneDirFs = fs;
+      Path donePath = new Path(doneLocation);
+      doneDirFs = donePath.getFileSystem(conf);
+      done = doneDirFs.makeQualified(donePath);
     } else {
       done = logDirFs.makeQualified(new Path(logDir, "done"));
       doneDirFs = logDirFs;
@@ -211,6 +225,34 @@ public class JobHistory {
   }
 
   /**
+   * Get the JobID from the history file's name. See it's companion method
+   * {@link #getJobHistoryFile(Path, JobID, String)} for how history file's name
+   * is constructed from a given JobID and userName.
+   * 
+   * @param jobHistoryFilePath
+   * @return jobID
+   */
+  public static JobID getJobIDFromHistoryFilePath(Path jobHistoryFilePath) {
+    String[] jobDetails = jobHistoryFilePath.getName().split("_");
+    String jobId =
+        jobDetails[0] + "_" + jobDetails[1] + "_" + jobDetails[2];
+    return JobID.forName(jobId);
+  }
+
+  /**
+   * Get the user name of the job-submitter from the history file's name. See
+   * it's companion method {@link #getJobHistoryFile(Path, JobID, String)} for
+   * how history file's name is constructed from a given JobID and username.
+   * 
+   * @param jobHistoryFilePath
+   * @return the user-name
+   */
+  public static String getUserFromHistoryFilePath(Path jobHistoryFilePath) {
+    String[] jobDetails = jobHistoryFilePath.getName().split("_");
+    return jobDetails[3];
+  }
+
+  /**
    * Given the job id, return the history file path from the cache
    */
   public String getHistoryFilePath(JobID jobId) {
@@ -243,8 +285,7 @@ public class JobHistory {
   
     FSDataOutputStream out = logDirFs.create(logFile, 
         new FsPermission(JobHistory.HISTORY_FILE_PERMISSION),
-        EnumSet.of(CreateFlag.OVERWRITE), 
-        defaultBufferSize, 
+        true, defaultBufferSize, 
         logDirFs.getDefaultReplication(), 
         jobHistoryBlockSize, null);
   
@@ -252,7 +293,7 @@ public class JobHistory {
   
     /* Storing the job conf on the log dir */
   
-    Path logDirConfPath = getConfFile(jobId);
+    Path logDirConfPath = getConfFile(logDir, jobId);
     LOG.info("LogDirConfPath is " + logDirConfPath);
   
     FSDataOutputStream jobFileOut = null;
@@ -263,8 +304,7 @@ public class JobHistory {
         if (!logDirFs.exists(logDirConfPath)) {
           jobFileOut = logDirFs.create(logDirConfPath,
               new FsPermission(JobHistory.HISTORY_FILE_PERMISSION),
-              EnumSet.of(CreateFlag.OVERWRITE),
-              defaultBufferSize,
+              true, defaultBufferSize,
               logDirFs.getDefaultReplication(),
               logDirFs.getDefaultBlockSize(), null);
           jobConf.writeXml(jobFileOut);
@@ -325,7 +365,14 @@ public class JobHistory {
         TimeUnit.HOURS, new LinkedBlockingQueue<Runnable>());
   }
 
-  Path getConfFile(JobID jobId) {
+  /**
+   * Get the job conf file for the given jobId
+   * 
+   * @param logDir
+   * @param jobId
+   * @return the jobconf.xml path
+   */
+  public static Path getConfFile(Path logDir, JobID jobId) {
     Path jobFilePath = null;
     if (logDir != null) {
       jobFilePath = new Path(logDir + File.separator +
@@ -334,13 +381,20 @@ public class JobHistory {
     return jobFilePath;
   }
 
+  /**
+   * Generates a suffix for old/stale jobhistory files
+   * Pattern : . + identifier + .old
+   */
+  public static String getOldFileSuffix(String identifier) {
+    return "." + identifier + JobHistory.OLD_SUFFIX;
+  }
+  
   private void moveOldFiles() throws IOException {
     //move the log files remaining from last run to the DONE folder
     //suffix the file name based on Job tracker identifier so that history
     //files with same job id don't get over written in case of recovery.
     FileStatus[] files = logDirFs.listStatus(logDir);
-    String jtIdentifier = jobTracker.getTrackerIdentifier();
-    String fileSuffix = "." + jtIdentifier + JobHistory.OLD_SUFFIX;
+    String fileSuffix = getOldFileSuffix(jobTracker.getTrackerIdentifier());
     for (FileStatus fileStatus : files) {
       Path fromPath = fileStatus.getPath();
       if (fromPath.equals(done)) { //DONE can be a subfolder of log dir
@@ -356,7 +410,9 @@ public class JobHistory {
         LOG.warn("Unable to move " + fromPath +", deleting it");
         try {
           boolean b = logDirFs.delete(fromPath, false);
-          LOG.debug("Deletion of corrupt file " + fromPath + " returned " + b);
+          if (LOG.isDebugEnabled()) {
+            LOG.debug("Deletion of corrupt file " + fromPath + " returned " + b);
+          }
         } catch (IOException ioe) {
           // Cannot delete either? Just log and carry on
           LOG.warn("Unable to delete " + fromPath + "Exception: " +

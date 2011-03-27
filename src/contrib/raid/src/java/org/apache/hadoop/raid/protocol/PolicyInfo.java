@@ -21,20 +21,15 @@ package org.apache.hadoop.raid.protocol;
 import java.io.IOException;
 import java.io.DataInput;
 import java.io.DataOutput;
-import java.util.Date;
-import java.util.List;
 import java.util.Properties;
 import java.util.Enumeration;
 import java.lang.Math;
-import java.lang.Class;
 import java.text.SimpleDateFormat;
-import java.util.StringTokenizer;
 import java.util.concurrent.locks.ReentrantReadWriteLock;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.util.ReflectionUtils;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.io.Writable;
 import org.apache.hadoop.io.WritableFactories;
@@ -42,7 +37,6 @@ import org.apache.hadoop.io.WritableFactory;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.FileStatus;
-import org.apache.hadoop.raid.protocol.RaidProtocol.ReturnStatus;
 
 /**
  * Maintains information about one policy
@@ -55,14 +49,26 @@ public class PolicyInfo implements Writable {
 
   private Path srcPath;            // the specified src path
   private String policyName;       // name of policy
-  private String destinationPath;  // A destination path for this policy
+  private ErasureCodeType codeType;// the erasure code used
   private String description;      // A verbose description of this policy
   private Configuration conf;      // Hadoop configuration
 
   private Properties properties;   // Policy-dependent properties
 
   private ReentrantReadWriteLock plock; // protects policy operations.
-  
+  public static enum ErasureCodeType {
+    XOR, RS;
+    public static ErasureCodeType fromString(String s) {
+      if (XOR.toString().equalsIgnoreCase(s)) {
+        return XOR;
+      }
+      if (RS.toString().equalsIgnoreCase(s)) {
+        return RS;
+      }
+      return null;
+    }
+  }
+
   /**
    * Create the empty object
    */
@@ -88,6 +94,31 @@ public class PolicyInfo implements Writable {
   }
 
   /**
+   * Copy fields from another PolicyInfo
+   */
+  public void copyFrom(PolicyInfo other) {
+    if (other.conf != null) {
+      this.conf = other.conf;
+    }
+    if (other.policyName != null && other.policyName.length() > 0) {
+      this.policyName = other.policyName;
+    }
+    if (other.description != null && other.description.length() > 0) {
+      this.description = other.description;
+    }
+    if (other.codeType != null) {
+      this.codeType = other.codeType;
+    }
+    if (other.srcPath != null) {
+      this.srcPath = other.srcPath;
+    }
+    for (Object key : other.properties.keySet()) {
+      String skey = (String) key;
+      this.properties.setProperty(skey, other.properties.getProperty(skey));
+    }
+  }
+
+  /**
    * Sets the input path on which this policy has to be applied
    */
   public void setSrcPath(String in) throws IOException {
@@ -96,10 +127,10 @@ public class PolicyInfo implements Writable {
   }
 
   /**
-   * Set the destination path of this policy.
+   * Set the erasure code type used in this policy
    */
-  public void setDestinationPath(String des) {
-    this.destinationPath = des;
+  public void setErasureCode(String code) {
+    this.codeType = ErasureCodeType.fromString(code);
   }
 
   /**
@@ -136,14 +167,14 @@ public class PolicyInfo implements Writable {
   /**
    * Get the destination path of this policy.
    */
-  public String getDestinationPath() {
-    return this.destinationPath;
+  public ErasureCodeType getErasureCode() {
+    return this.codeType;
   }
 
   /**
    * Get the srcPath
    */
-  public Path getSrcPath() throws IOException {
+  public Path getSrcPath() {
     return srcPath;
   }
 
@@ -173,7 +204,7 @@ public class PolicyInfo implements Writable {
     StringBuffer buff = new StringBuffer();
     buff.append("Policy Name:\t" + policyName + " --------------------\n");
     buff.append("Source Path:\t" + srcPath + "\n");
-    buff.append("Dest Path:\t" + destinationPath + "\n");
+    buff.append("Erasure Code:\t" + codeType + "\n");
     for (Enumeration<?> e = properties.propertyNames(); e.hasMoreElements();) {
       String name = (String) e.nextElement(); 
       buff.append( name + ":\t" + properties.getProperty(name) + "\n");
@@ -201,7 +232,7 @@ public class PolicyInfo implements Writable {
   public void write(DataOutput out) throws IOException {
     Text.writeString(out, srcPath.toString());
     Text.writeString(out, policyName);
-    Text.writeString(out, destinationPath);
+    Text.writeString(out, codeType.toString());
     Text.writeString(out, description);
     out.writeInt(properties.size());
     for (Enumeration<?> e = properties.propertyNames(); e.hasMoreElements();) {
@@ -214,7 +245,7 @@ public class PolicyInfo implements Writable {
   public void readFields(DataInput in) throws IOException {
     this.srcPath = new Path(Text.readString(in));
     this.policyName = Text.readString(in);
-    this.destinationPath = Text.readString(in);
+    this.codeType = ErasureCodeType.fromString(Text.readString(in));
     this.description = Text.readString(in);
     for (int n = in.readInt(); n>0; n--) {
       String name = Text.readString(in);

@@ -22,8 +22,12 @@
   import="javax.servlet.*"
   import="javax.servlet.http.*"
   import="java.io.*"
+  import="java.lang.management.MemoryUsage"
+  import="java.lang.management.MemoryMXBean"
+  import="java.lang.management.ManagementFactory"
   import="java.util.*"
   import="java.text.DecimalFormat"
+  import="org.apache.hadoop.http.HtmlQuoting"
   import="org.apache.hadoop.mapred.*"
   import="org.apache.hadoop.mapreduce.*"
   import="org.apache.hadoop.util.*"
@@ -33,6 +37,7 @@
 <%
   JobTracker tracker = (JobTracker) application.getAttribute("job.tracker");
   ClusterStatus status = tracker.getClusterStatus();
+  MemoryMXBean mem = ManagementFactory.getMemoryMXBean();
   ClusterMetrics metrics = tracker.getClusterMetrics();
   String trackerName = 
            StringUtils.simpleHostname(tracker.getJobTrackerMachine());
@@ -103,14 +108,16 @@
 </head>
 <body>
 
-<% JSPUtil.processButtons(request, response, tracker); %>
+<% if (!JSPUtil.processButtons(request, response, tracker)) {
+     return;// user is not authorized
+   }
+%>
 
 <h1><%= trackerName %> Hadoop Map/Reduce Administration</h1>
 
 <div id="quicklinks">
   <a href="#quicklinks" onclick="toggle('quicklinks-list'); return false;">Quick Links</a>
   <ul id="quicklinks-list">
-    <li><a href="#scheduling_info">Scheduling Info</a></li>
     <li><a href="#running_jobs">Running Jobs</a></li>
     <li><a href="#retired_jobs">Retired Jobs</a></li>
     <li><a href="#local_logs">Local Logs</a></li>
@@ -127,7 +134,12 @@
 <b>Identifier:</b> <%= tracker.getTrackerIdentifier()%><br>                 
                    
 <hr>
-<h2>Cluster Summary (Heap Size is <%= StringUtils.byteDesc(status.getUsedMemory()) %>/<%= StringUtils.byteDesc(status.getMaxMemory()) %>)</h2>
+<h2>Cluster Summary (Heap Size is
+    <% MemoryUsage heap = mem.getHeapMemoryUsage();
+       out.print(StringUtils.byteDesc(heap.getUsed()) + "/");
+       out.print(StringUtils.byteDesc(heap.getCommitted()) + "/");
+       out.print(StringUtils.byteDesc(heap.getMax()) + ")");
+    %>
 <% 
  generateSummaryTable(out, metrics, tracker); 
 %>
@@ -137,14 +149,14 @@
 <hr>
 
 <h2 id="running_jobs">Running Jobs</h2>
-<%=JSPUtil.generateJobTable("Running", runningJobs, 30, 0)%>
+<%=JSPUtil.generateJobTable("Running", runningJobs, 30, 0, tracker.conf)%>
 <hr>
 
 <%
 if (completedJobs.size() > 0) {
   out.print("<h2 id=\"completed_jobs\">Completed Jobs</h2>");
   out.print(JSPUtil.generateJobTable("Completed", completedJobs, 0, 
-    runningJobs.size()));
+    runningJobs.size(), tracker.conf));
   out.print("<hr>");
 }
 %>
@@ -153,7 +165,7 @@ if (completedJobs.size() > 0) {
 if (failedJobs.size() > 0) {
   out.print("<h2 id=\"failed_jobs\">Failed Jobs</h2>");
   out.print(JSPUtil.generateJobTable("Failed", failedJobs, 0, 
-    (runningJobs.size()+completedJobs.size())));
+    (runningJobs.size()+completedJobs.size()), tracker.conf));
   out.print("<hr>");
 }
 %>

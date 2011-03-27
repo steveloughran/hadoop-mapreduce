@@ -27,6 +27,8 @@ import java.util.TreeSet;
 
 import org.apache.commons.logging.Log;
 import org.apache.commons.logging.LogFactory;
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.fs.ChecksumFileSystem;
 import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.LocalDirAllocator;
@@ -50,7 +52,7 @@ import org.apache.hadoop.mapred.IFile.Writer;
 import org.apache.hadoop.mapred.Merger.Segment;
 import org.apache.hadoop.mapred.Task.CombineOutputCollector;
 import org.apache.hadoop.mapred.Task.CombineValuesIterator;
-import org.apache.hadoop.mapreduce.JobContext;
+import org.apache.hadoop.mapreduce.MRJobConfig;
 import org.apache.hadoop.mapreduce.TaskAttemptID;
 import org.apache.hadoop.mapreduce.TaskID;
 import org.apache.hadoop.mapreduce.task.reduce.MapOutput.MapOutputComparator;
@@ -58,7 +60,8 @@ import org.apache.hadoop.util.Progress;
 import org.apache.hadoop.util.ReflectionUtils;
 
 @SuppressWarnings(value={"unchecked", "deprecation"})
-
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class MergeManager<K, V> {
   
   private static final Log LOG = LogFactory.getLog(MergeManager.class);
@@ -150,27 +153,27 @@ public class MergeManager<K, V> {
     this.rfs = ((LocalFileSystem)localFS).getRaw();
     
     final float maxInMemCopyUse =
-      jobConf.getFloat(JobContext.SHUFFLE_INPUT_BUFFER_PERCENT, 0.90f);
+      jobConf.getFloat(MRJobConfig.SHUFFLE_INPUT_BUFFER_PERCENT, 0.90f);
     if (maxInMemCopyUse > 1.0 || maxInMemCopyUse < 0.0) {
       throw new IllegalArgumentException("Invalid value for " +
-          JobContext.SHUFFLE_INPUT_BUFFER_PERCENT + ": " +
+          MRJobConfig.SHUFFLE_INPUT_BUFFER_PERCENT + ": " +
           maxInMemCopyUse);
     }
 
     // Allow unit tests to fix Runtime memory
     this.memoryLimit = 
-      (long)(jobConf.getLong(JobContext.REDUCE_MEMORY_TOTAL_BYTES,
+      (long)(jobConf.getLong(MRJobConfig.REDUCE_MEMORY_TOTAL_BYTES,
           Math.min(Runtime.getRuntime().maxMemory(), Integer.MAX_VALUE))
         * maxInMemCopyUse);
  
-    this.ioSortFactor = jobConf.getInt(JobContext.IO_SORT_FACTOR, 100);
+    this.ioSortFactor = jobConf.getInt(MRJobConfig.IO_SORT_FACTOR, 100);
 
     this.maxSingleShuffleLimit = 
       (long)(memoryLimit * MAX_SINGLE_SHUFFLE_SEGMENT_FRACTION);
     this.memToMemMergeOutputsThreshold = 
-            jobConf.getInt(JobContext.REDUCE_MEMTOMEM_THRESHOLD, ioSortFactor);
+            jobConf.getInt(MRJobConfig.REDUCE_MEMTOMEM_THRESHOLD, ioSortFactor);
     this.mergeThreshold = (long)(this.memoryLimit * 
-                          jobConf.getFloat(JobContext.SHUFFLE_MERGE_EPRCENT, 
+                          jobConf.getFloat(MRJobConfig.SHUFFLE_MERGE_EPRCENT, 
                                            0.90f));
     LOG.info("MergerManager: memoryLimit=" + memoryLimit + ", " +
              "maxSingleShuffleLimit=" + maxSingleShuffleLimit + ", " +
@@ -179,7 +182,7 @@ public class MergeManager<K, V> {
              "memToMemMergeOutputsThreshold=" + memToMemMergeOutputsThreshold);
 
     boolean allowMemToMemMerge = 
-      jobConf.getBoolean(JobContext.REDUCE_MEMTOMEM_ENABLED, false);
+      jobConf.getBoolean(MRJobConfig.REDUCE_MEMTOMEM_ENABLED, false);
     if (allowMemToMemMerge) {
       this.memToMemMerger = 
         new IntermediateMemoryToMemoryMerger(this,
@@ -628,9 +631,9 @@ public class MergeManager<K, V> {
              onDiskMapOutputs.size() + " on-disk map-outputs");
     
     final float maxRedPer =
-      job.getFloat(JobContext.REDUCE_INPUT_BUFFER_PERCENT, 0f);
+      job.getFloat(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT, 0f);
     if (maxRedPer > 1.0 || maxRedPer < 0.0) {
-      throw new IOException(JobContext.REDUCE_INPUT_BUFFER_PERCENT +
+      throw new IOException(MRJobConfig.REDUCE_INPUT_BUFFER_PERCENT +
                             maxRedPer);
     }
     int maxInMemReduce = (int)Math.min(

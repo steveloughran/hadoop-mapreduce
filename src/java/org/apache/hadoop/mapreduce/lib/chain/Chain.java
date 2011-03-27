@@ -22,6 +22,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 
+import org.apache.hadoop.classification.InterfaceAudience;
+import org.apache.hadoop.classification.InterfaceStability;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.DefaultStringifier;
 import org.apache.hadoop.io.Stringifier;
@@ -43,6 +45,8 @@ import org.apache.hadoop.util.ReflectionUtils;
  * The Chain class provides all the common functionality for the
  * {@link ChainMapper} and the {@link ChainReducer} classes.
  */
+@InterfaceAudience.Private
+@InterfaceStability.Unstable
 public class Chain {
   protected static final String CHAIN_MAPPER = "mapreduce.chain.mapper";
   protected static final String CHAIN_REDUCER = "mapreduce.chain.reducer";
@@ -688,13 +692,13 @@ public class Chain {
           + CHAIN_MAPPER_CONFIG + (index - 1));
       if (!inputKeyClass.isAssignableFrom(previousMapperConf.getClass(
           MAPPER_OUTPUT_KEY_CLASS, null))) {
-        throw new IllegalArgumentException("The Mapper output key class does"
-            + " not match the previous Mapper input key class");
+        throw new IllegalArgumentException("The specified Mapper input key class does"
+            + " not match the previous Mapper's output key class.");
       }
       if (!inputValueClass.isAssignableFrom(previousMapperConf.getClass(
           MAPPER_OUTPUT_VALUE_CLASS, null))) {
-        throw new IllegalArgumentException("The Mapper output value class"
-            + " does not match the previous Mapper input value class");
+        throw new IllegalArgumentException("The specified Mapper input value class"
+            + " does not match the previous Mapper's output value class.");
       }
     }
   }
