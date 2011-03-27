@@ -29,6 +29,43 @@ Trunk (unreleased changes)
 
     MAPREDUCE-1706. Log RAID recoveries on HDFS. (schen)
 
+    MAPREDUCE-2334. Update BlockPlacementPolicyRaid for the new method
+    in BlockPlacementPolicy.  (szetszwo)
+
+    MAPREDUCE-2254. Allow setting of end-of-record delimiter for
+    TextInputFormat (Ahmed Radwan via todd)
+
+    MAPREDUCE-1927. Unit test for HADOOP-6835 (concatenated gzip support).
+    (Greg Roelofs via tomwhite)
+
+    MAPREDUCE-2206. The task-cleanup tasks should be optional. (schen)
+
+    MAPREDUCE-2225. MultipleOutputs should not require the use of 'Writable'.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-1811. Job.monitorAndPrintJob() should print status of the job
+    at completion. (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-993. bin/hadoop job -events <jobid> <from-event-#> <#-of-events>
+    help message is confusing. (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2302. Add static factory methods in GaloisField. (schen)
+
+    MAPREDUCE-2351. mapred.job.tracker.history.completed.location should
+    support an arbitrary filesystem URI. (tomwhite)
+
+    MAPREDUCE-2239. BlockPlacementPolicyRaid should call getBlockLocations
+    only when necessary. (schen)
+
+    MAPREDUCE-2331. Add coverage of task graph servlet to fair scheduler system
+    test. (todd)
+
+    MAPREDUCE-2367. Allow using a file to exclude certain tests from build.
+    (todd)
+    
+    MAPREDUCE-2367. Amend previous commit for this JIRA to fix build on Cygwin.
+    (todd)
+
   OPTIMIZATIONS
     
     MAPREDUCE-2026. Make JobTracker.getJobCounters() and
@@ -65,6 +102,24 @@ Trunk (unreleased changes)
     getProtocolSigature (todd)
 
     MAPREDUCE-2311. Fix TestFairScheduler failure (schen)
+
+    MAPREDUCE-1996. API: Reducer.reduce() method detail misstatement.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2203. Wrong javadoc for TaskRunner's appendJobJarClasspaths
+    method. (Jingguo Yao via tomwhite)
+
+    MAPREDUCE-2074. Task should fail when symlink creation fails.
+    (Priyo Mustafi via tomwhite)
+
+    MAPREDUCE-1242. Chain APIs error misleading.
+    (Harsh J Chouraria via tomwhite)
+
+    MAPREDUCE-2379. Adds missing DistributedCache configurations in 
+    mapred-default.xml (Todd Lipcon via amareshwari)
+
+    MAPREDUCE-2348. Disable mumak tests on trunk since they currently time out
+    (todd)
 
 Release 0.22.0 - Unreleased
 
@@ -252,6 +307,12 @@ Release 0.22.0 - Unreleased
     MAPREDUCE-2250. Fix logging in raid code. (Ramkumar Vadali via schen)
 
     MAPREDUCE-2260. Remove auto-generated native build files. (rvs via eli)
+
+    MAPREDUCE-2314. configure files that are generated as part of the released
+    tarball need to have executable bit set (rvs via cos)
+
+    MAPREDUCE-1159.  Limit Job name in web UI to be 80 char long.  (Harsh J
+    Chouraria via szetszwo)
 
   OPTIMIZATIONS
 
@@ -557,6 +618,29 @@ Release 0.22.0 - Unreleased
     (todd)
 
     MAPREDUCE-2315. javadoc is failing in nightly build (todd)
+
+    MAPREDUCE-2054. Hierarchical queue implementation broke dynamic queue
+    addition in Dynamic Scheduler. (Thomas Sandholm via tomwhite)
+
+    MAPREDUCE-2272. Job ACL file should not be executable
+    (Harsh J Chouraria via todd)
+
+    MAPREDUCE-2241. ClusterWithLinuxTaskController should accept relative path
+    on the command line. (todd)
+
+    MAPREDUCE-2251. Remove unused mapreduce.job.userhistorylocation config.
+    (Harsh J Chouraria via todd)
+
+    MAPREDUCE-2284. TestLocalRunner.testMultiMaps times out (todd)
+
+    MAPREDUCE-2336. Tool-related packages should be in the Tool javadoc group.
+    (tomwhite)
+    
+    MAPREDUCE-2394. JUnit output format doesn't propagate into raid contrib
+    build. (todd)
+
+    MAPREDUCE-2392. TaskTracker shutdown in the tests sometimes take 60s.
+    (tomwhite)
 
 Release 0.21.1 - Unreleased
 
