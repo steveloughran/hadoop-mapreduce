@@ -1841,7 +1841,6 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
     DelegationTokenRenewal.close();
     if (fs != null) {
       fs.close();
-      fs = null;
     }
     LOG.info("stopped all jobtracker services");
     return;

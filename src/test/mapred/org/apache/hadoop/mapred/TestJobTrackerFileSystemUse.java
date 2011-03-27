@@ -97,7 +97,6 @@ public class TestJobTrackerFileSystemUse {
     } catch (IOException e) {
       //this was expected
     }
-    Assert.assertNull("jobTracker.fs", jobTracker.fs);
   }
 
 }
