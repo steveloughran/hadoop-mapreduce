@@ -1544,10 +1544,6 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
         // if we haven't contacted the namenode go ahead and do it
         if (fs == null) {
           bindFileSystem(conf);
-          fs = getMROwner().doAs(new PrivilegedExceptionAction<FileSystem>() {
-            public FileSystem run() throws IOException {
-              return FileSystem.get(conf);
-          }});
         }
         // clean up the system dir, which will only work if hdfs is out of 
         // safe mode
@@ -4728,8 +4724,13 @@ public class JobTracker implements MRConstants, InterTrackerProtocol,
    * @param conf the configuration to use
    * @throws IOException if there was a problem binding to the filesystem
    */
-  private void bindFileSystem(JobConf conf) throws IOException {
-    fs = FileSystem.newInstance(conf);
+  private void bindFileSystem(final JobConf conf)
+      throws IOException, InterruptedException {
+    fs = getMROwner().doAs(new PrivilegedExceptionAction<FileSystem>() {
+      public FileSystem run() throws IOException {
+        return FileSystem.get(conf);
+      }
+    });
     if (fs == null) {
       throw new IllegalStateException("Unable to bind to the filesystem: "
           + FileSystem.getDefaultUri(conf));
