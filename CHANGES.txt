@@ -8,6 +8,12 @@ Trunk (unreleased changes)
 
   IMPROVEMENTS
 
+    MAPREDUCE-2153. Bring in more job configuration properties in to the trace 
+    file. (Rajesh Balamohan via amarrk)
+
+    MAPREDUCE-1461. Feature to instruct rumen-folder utility to skip jobs worth 
+    of specific duration. (Rajesh Balamohan via amarrk)
+
     MAPREDUCE-2172. Added test-patch.properties required by test-patch.sh (nigel)
 
     MAPREDUCE-2156. Raid-aware FSCK. (Patrick Kling via dhruba)
@@ -62,10 +68,21 @@ Trunk (unreleased changes)
 
     MAPREDUCE-2367. Allow using a file to exclude certain tests from build.
     (todd)
-    
-    MAPREDUCE-2367. Amend previous commit for this JIRA to fix build on Cygwin.
-    (todd)
 
+    MAPREDUCE-2202. Generalize CLITest structure and interfaces to faciliate
+    upstream adoption (e.g. for web or system testing). (cos)
+
+    MAPREDUCE-2420. JobTracker should be able to renew delegation token over 
+    HTTP (Boris Shkolnik via jitendra)
+
+    MAPREDUCE-2474. Add docs to the new API Partitioner on how to access the
+    Job Configuration. (Harsh J Chouraria via todd)
+    
+    MAPREDUCE-2475. Disable IPV6 for junit tests. (suresh srinivas via mahadev)
+
+    MAPREDUCE-2422. Removed unused internal methods from DistributedCache.
+    (tomwhite)
+ 
   OPTIMIZATIONS
     
     MAPREDUCE-2026. Make JobTracker.getJobCounters() and
@@ -73,6 +90,18 @@ Trunk (unreleased changes)
     (Joydeep Sen Sarma via schen)
 
   BUG FIXES
+
+    MAPREDUCE-1978. Rumen TraceBuilder should provide recursive
+    input folder scanning.
+
+    MAPREDUCE-2416. Remove the restriction of specifying group names in
+    users-list file for Gridmix in RoundRobinUserResolver mode.
+
+    MAPREDUCE-2417. Fix Gridmix in RoundRobinUserResolver mode to
+    map testing/proxy users to unique users in a trace.
+
+    MAPREDUCE-2307. Exception thrown in Jobtracker logs, when the Scheduler
+    configured is FairScheduler. (Devaraj K via matei)
 
     MAPREDUCE-2199. build is broken 0.22 branch creation. (cos)
 
@@ -120,6 +149,20 @@ Trunk (unreleased changes)
 
     MAPREDUCE-2348. Disable mumak tests on trunk since they currently time out
     (todd)
+
+    MAPREDUCE-2395. TestBlockFixer timing out on trunk. (Ramkumar Vadali via
+    todd)
+
+    MAPREDUCE-2426. Make TestFairSchedulerSystem fail with more verbose output
+    (todd)
+
+    MAPREDUCE-2448. NoSuchMethodError:
+    org.apache.hadoop.hdfs.TestDatanodeBlockScanner.corruptReplica(..) (eli)
+
+    MAPREDUCE-2465. Disable raid contrib which is unable to compile after
+    HDFS federation merge. (todd)
+
+    MAPREDUCE-2460. Fix flaky test TestFairSchedulerSystem. (todd)
 
 Release 0.22.0 - Unreleased
 
@@ -313,6 +356,9 @@ Release 0.22.0 - Unreleased
 
     MAPREDUCE-1159.  Limit Job name in web UI to be 80 char long.  (Harsh J
     Chouraria via szetszwo)
+
+    MAPREDUCE-2337. Remove dependence of public MapReduce API on classes in
+    server package. (tomwhite)
 
   OPTIMIZATIONS
 
@@ -642,6 +688,21 @@ Release 0.22.0 - Unreleased
     MAPREDUCE-2392. TaskTracker shutdown in the tests sometimes take 60s.
     (tomwhite)
 
+    MAPREDUCE-2437. SLive uses only part* files to generating the final report.
+    (shv)
+
+    MAPREDUCE-2428. start-mapred.sh script fails if HADOOP_HOME is not set.
+    (tomwhite via eli)
+
+    MAPREDUCE-2445. Fix TestMiniMRWithDFSWithDistinctUsers to be a valid test.
+    (todd)
+
+    MAPREDUCE-2457. Job submission should inject group.name on the JobTracker
+    (Alejandro Abdelnur via todd)
+
+    MAPREDUCE-2472. Extra whitespace in mapred.child.java.opts breaks JVM
+    initialization. (Aaron T. Myers via todd)
+
 Release 0.21.1 - Unreleased
 
   NEW FEATURES
@@ -676,6 +737,8 @@ Release 0.21.1 - Unreleased
 
     MAPREDUCE-1929. Allow artifacts to be published to the staging Apache Nexus
     Maven Repository. (tomwhite)
+
+    MAPREDUCE-2317. Fix a NPE in HadoopArchives.  (Devaraj K via szetszwo)
 
 Release 0.21.0 - 2010-08-13
 

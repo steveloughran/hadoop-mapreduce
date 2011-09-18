@@ -83,6 +83,7 @@ import org.apache.hadoop.mapreduce.MRConfig;
 import org.apache.hadoop.mapreduce.QueueInfo;
 import org.apache.hadoop.mapreduce.TaskTrackerInfo;
 import org.apache.hadoop.mapreduce.TaskType;
+import org.apache.hadoop.mapreduce.Cluster.JobTrackerStatus;
 import org.apache.hadoop.mapreduce.jobhistory.JobHistory;
 import org.apache.hadoop.mapreduce.protocol.ClientProtocol;
 import org.apache.hadoop.mapreduce.security.token.DelegationTokenRenewal;
@@ -90,6 +91,7 @@ import org.apache.hadoop.mapreduce.security.token.JobTokenSecretManager;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenIdentifier;
 import org.apache.hadoop.mapreduce.security.token.delegation.DelegationTokenSecretManager;
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.mapreduce.server.jobtracker.State;
 import org.apache.hadoop.mapreduce.server.jobtracker.TaskTracker;
 import org.apache.hadoop.mapreduce.util.ConfigUtil;
 import org.apache.hadoop.mapreduce.util.MRAsyncDiskService;
@@ -3390,11 +3392,20 @@ public class JobTracker extends LifecycleServiceWithWorkers
       getBlacklistedTrackerCount(), getExcludedNodes().size()) ;
   }
 
+  /**
+   * @deprecated Use {@link #getJobTrackerStatus()} instead.
+   */
+  @Deprecated
   public org.apache.hadoop.mapreduce.server.jobtracker.State 
       getJobTrackerState() {
       return getServiceState().equals(ServiceState.LIVE) ?
               org.apache.hadoop.mapreduce.server.jobtracker.State.RUNNING
               : org.apache.hadoop.mapreduce.server.jobtracker.State.INITIALIZING;
+  }
+ 
+  @Override
+  public JobTrackerStatus getJobTrackerStatus() {
+    return JobTrackerStatus.valueOf(state.name());
   }
   
   public long getTaskTrackerExpiryInterval() {
