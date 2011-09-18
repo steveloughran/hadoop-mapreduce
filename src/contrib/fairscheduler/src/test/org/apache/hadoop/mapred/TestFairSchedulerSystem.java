@@ -18,6 +18,7 @@
 package org.apache.hadoop.mapred;
 
 import org.apache.hadoop.mapreduce.server.jobtracker.JTConfig;
+import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.mapreduce.SleepJob;
 import org.apache.hadoop.util.ToolRunner;
 import org.apache.hadoop.conf.Configuration;
@@ -68,6 +69,7 @@ public class TestFairSchedulerSystem {
     conf.set("mapred.fairscheduler.preemption.interval", "1");
     conf.set("mapred.fairscheduler.preemption", "true");
     conf.set("mapred.fairscheduler.eventlog.enabled", "true");
+    conf.set("mapred.fairscheduler.poolnameproperty", "group.name");
     conf.set(JTConfig.JT_PERSIST_JOBSTATUS, "false");
     mr = new MiniMRCluster(taskTrackers, "file:///", 1, null, null, conf);
   }
@@ -123,8 +125,17 @@ public class TestFairSchedulerSystem {
           continue;
         }
         for (JobStatus j : jobs) {
-          System.err.println("Checking task log for " + j.getJobID());
-          checkTaskGraphServlet(j.getJobID());
+          System.err.println("Checking task graph for " + j.getJobID());
+          try {
+            checkTaskGraphServlet(j.getJobID());
+          } catch (AssertionError err) {
+            // The task graph servlet will be empty if the job has retired.
+            // This is OK.
+            RunningJob rj = jc.getJob(j.getJobID());
+            if (!rj.isRetired()) {
+              throw err;
+            }
+          }
         }
       }
     }
@@ -155,7 +166,12 @@ public class TestFairSchedulerSystem {
     }
 
     String contents = sb.toString();
-    assertTrue(contents.contains("Fair Scheduler Administration"));
+    assertTrue("Bad contents for fair scheduler servlet: " + contents,
+      contents.contains("Fair Scheduler Administration"));
+
+    String userGroups[] = UserGroupInformation.getCurrentUser().getGroupNames();
+    String primaryGroup = ">" + userGroups[0] + "<";
+    assertTrue(contents.contains(primaryGroup));
   }
 
   private void checkTaskGraphServlet(JobID job) throws Exception {
@@ -169,7 +185,8 @@ public class TestFairSchedulerSystem {
 
     // Just to be sure, slurp the content and make sure it looks like the scheduler
     String contents = slurpContents(connection);
-    assertTrue(contents.contains("</svg>"));
+    assertTrue("Bad contents for job " + job + ":\n" + contents,
+      contents.contains("</svg>"));
   }
 
   private String slurpContents(HttpURLConnection connection) throws Exception {

@@ -15,19 +15,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.apache.hadoop.mapreduce.server.jobtracker;
+package org.apache.hadoop.raid;
 
-import org.apache.hadoop.classification.InterfaceAudience;
-import org.apache.hadoop.classification.InterfaceStability;
-import org.apache.hadoop.mapreduce.Cluster.JobTrackerStatus;
+import org.junit.Test;
+import static org.junit.Assert.*;
 
-/**
- * Describes the state of JobTracker
- * @deprecated Use {@link JobTrackerStatus} instead.
- */
-@InterfaceAudience.Public
-@InterfaceStability.Evolving
-@Deprecated
-public enum State {
-  INITIALIZING, RUNNING;
+public class TestBlockFixerParityBlockFixDist extends TestBlockFixer {
+  @Test
+  public void testParityBlockFixDist() throws Exception {
+    implParityBlockFix("testParityBlockFixDist", false);
+  }
+
+  @Test
+  public void testParityHarBlockFixDist() throws Exception {
+    implParityHarBlockFix("testParityHarBlockFixDist", false);
+  }
 }
